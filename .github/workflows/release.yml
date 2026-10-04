@@ -44,6 +44,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: ${{ matrix.target }}
+          components: rustfmt, clippy
       - name: Install native musl linker
         if: matrix.linux
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
