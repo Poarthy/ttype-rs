@@ -1,8 +1,13 @@
-# ttype (Rust port)
+# ttype-rs
 
 `ttype` is a terminal typing trainer with prose and code modes, replay, live
-WPM charts, consistency scores, and character-error heatmaps. This project is
-the safe-Rust port of the Go reference in `/root/ttype`.
+WPM charts, consistency scores, and character-error heatmaps.
+
+This project is a **Rust rewrite** of
+[alirezaudev/ttype](https://github.com/alirezaudev/ttype) — the original Go
+implementation of the same tool. The goal is behavior parity with upstream,
+reimplemented from scratch in safe Rust; the upstream repository and its
+authors are unmodified and unaffiliated with this port.
 
 The final application uses a single-threaded `ratatui` and `crossterm` event
 loop, stores user configuration as TOML, and embeds shipped practice lists so
