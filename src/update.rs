@@ -1,7 +1,9 @@
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -15,6 +17,39 @@ pub enum UpdateError {
     Archive,
     #[error("update I/O: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct UpdateState {
+    pub last_check_unix: u64,
+    pub latest: String,
+    pub installed: String,
+    pub last_install_unix: u64,
+}
+
+pub fn should_check(state: &UpdateState, now: u64) -> bool {
+    now.saturating_sub(state.last_check_unix) >= Duration::from_secs(24 * 60 * 60).as_secs()
+}
+
+pub fn load_state(path: &Path) -> UpdateState {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+pub fn save_state(path: &Path, state: &UpdateState) -> Result<(), UpdateError> {
+    let content = serde_json::to_vec_pretty(state)
+        .map_err(|error| UpdateError::Network(error.to_string()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| UpdateError::Network("state has no parent directory".to_owned()))?;
+    std::fs::create_dir_all(parent)?;
+    super_atomic_write(path, &content)
+}
+pub fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_secs())
 }
 
 pub fn newer_version(latest: &str, local: &str) -> bool {
@@ -66,6 +101,13 @@ pub fn atomic_replace(executable: &Path, bytes: &[u8]) -> Result<(), UpdateError
         .open(&temporary)?;
     file.sync_all()?;
     fs::rename(&temporary, executable)?;
+    Ok(())
+}
+
+fn super_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), UpdateError> {
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, bytes)?;
+    fs::rename(temporary, path)?;
     Ok(())
 }
 

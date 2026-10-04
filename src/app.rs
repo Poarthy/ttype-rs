@@ -39,8 +39,8 @@ pub fn run(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
-        Some(Command::Update) => Err(anyhow!("update checking is not available in this build")),
-        Some(Command::Uninstall(_)) => Err(anyhow!("uninstall is not available in this build")),
+        Some(Command::Update) => run_update(),
+        Some(Command::Uninstall(args)) => run_uninstall(args),
     }
 }
 
@@ -247,6 +247,40 @@ fn run_clear(args: crate::cli::ClearArgs) -> Result<()> {
             crate::cli::ClearTarget::All => "everything",
         }
     );
+    Ok(())
+}
+
+fn run_update() -> Result<()> {
+    let paths = Paths::discover()?;
+    let state_path = paths.data.join("update.json");
+    let mut state = crate::update::load_state(&state_path);
+    let now = crate::update::now_unix();
+    if !crate::update::should_check(&state, now) {
+        println!("Update check already ran today.");
+        return Ok(());
+    }
+    state.last_check_unix = now;
+    crate::update::save_state(&state_path, &state)?;
+    println!("Update check recorded. No release endpoint is configured for this source build.");
+    Ok(())
+}
+
+fn run_uninstall(args: crate::cli::UninstallArgs) -> Result<()> {
+    let paths = Paths::discover()?;
+    if !args.yes {
+        return Err(anyhow!("refusing to uninstall without --yes"));
+    }
+    if args.purge {
+        for directory in [&paths.config, &paths.data] {
+            if directory.exists() {
+                fs::remove_dir_all(directory)
+                    .with_context(|| format!("remove {}", directory.display()))?;
+            }
+        }
+        println!("Removed ttype data and configuration.");
+    } else {
+        println!("Source builds are not self-uninstalled; settings and history were kept.");
+    }
     Ok(())
 }
 fn run_doctor() -> Result<()> {

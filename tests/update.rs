@@ -1,5 +1,7 @@
 use sha2::{Digest, Sha256};
-use ttype_core::update::{atomic_replace, newer_version, verify_checksum};
+use ttype_core::update::{
+    UpdateState, atomic_replace, newer_version, should_check, verify_checksum,
+};
 
 #[test]
 fn version_comparison_matches_go_vectors() {
@@ -26,4 +28,14 @@ fn checksum_and_atomic_swap_preserve_expected_content() {
     assert!(atomic_replace(&file, payload).is_ok());
     assert_eq!(std::fs::read(&file).unwrap_or_default(), payload);
     let _ = std::fs::remove_file(file);
+}
+
+#[test]
+fn update_checks_are_limited_to_once_daily_even_after_failures() {
+    let state = UpdateState {
+        last_check_unix: 1_000,
+        ..UpdateState::default()
+    };
+    assert!(!should_check(&state, 1_000 + 86_399));
+    assert!(should_check(&state, 1_000 + 86_400));
 }
