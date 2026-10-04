@@ -1,6 +1,9 @@
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
+use tar::Builder;
 use ttype_core::update::{
-    UpdateState, atomic_replace, newer_version, should_check, verify_checksum,
+    UpdateState, atomic_replace, extract_binary, newer_version, should_check, verify_checksum,
 };
 
 #[test]
@@ -38,4 +41,35 @@ fn update_checks_are_limited_to_once_daily_even_after_failures() {
     };
     assert!(!should_check(&state, 1_000 + 86_399));
     assert!(should_check(&state, 1_000 + 86_400));
+}
+
+#[test]
+fn release_archive_extracts_only_the_root_binary_with_a_bounded_reader()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut archive = Vec::new();
+    {
+        let encoder = GzEncoder::new(&mut archive, Compression::default());
+        let mut builder = Builder::new(encoder);
+        let payload = b"release-binary";
+        let mut header = tar::Header::new_gnu();
+        header.set_path("ttype")?;
+        header.set_size(payload.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append(&header, &payload[..])?;
+        let encoder = builder.into_inner()?;
+        encoder.finish()?;
+    }
+    assert_eq!(extract_binary(&archive)?, b"release-binary");
+    Ok(())
+}
+
+#[test]
+fn checksum_failure_does_not_replace_the_installed_binary() {
+    let file = std::env::temp_dir().join(format!("ttype-update-preserve-{}", std::process::id()));
+    std::fs::write(&file, b"old").unwrap_or_default();
+    let bad = verify_checksum(b"new", "ttype.tar.gz", "deadbeef  ttype.tar.gz\n");
+    assert!(bad.is_err());
+    assert_eq!(std::fs::read(&file).unwrap_or_default(), b"old");
+    let _ = std::fs::remove_file(file);
 }
