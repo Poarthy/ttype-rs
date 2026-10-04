@@ -1,0 +1,110 @@
+let owner = String::from("ttype");
+
+let borrowed: &str = &owner;
+
+fn first<'a>(items: &'a [String]) -> Option<&'a String> { items.first() }
+
+match result { Ok(value) => value, Err(error) => return Err(error) }
+
+let value = option.unwrap_or_default();
+
+let text = read_config(path)?;
+
+trait Render { fn render(&self) -> String; }
+
+fn largest<T: Ord>(items: &[T]) -> Option<&T> { items.iter().max() }
+
+let doubled: Vec<_> = values.iter().map(|n| n * 2).collect();
+
+let total: i32 = values.iter().filter(|n| **n > 0).sum();
+
+let labels = rows.iter().map(|row| format!("{}", row.name));
+
+struct User { id: u64, name: String }
+
+enum Status { Ready, Running, Finished }
+
+impl User { fn display_name(&self) -> &str { &self.name } }
+
+mod config { pub fn load() -> Result<(), std::io::Error> { Ok(()) } }
+
+use crate::config::load;
+
+async fn fetch(url: &str) -> Result<String, Error> { todo!() }
+
+let response = fetch("https://example.invalid").await?;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+
+struct Settings { theme: String }
+
+#[derive(Default)]
+
+struct Cache { entries: Vec<String> }
+
+fn parse(input: &str) -> Result<u64, std::num::ParseIntError> { input.parse() }
+
+let port: u16 = std::env::var("PORT")?.parse()?;
+
+return Err(std::io::Error::other("missing config").into());
+
+let mut buffer = Vec::with_capacity(128);
+
+for item in items { println!("{item}"); }
+
+while let Some(job) = queue.pop() { run(job)?; }
+
+if let Some(user) = users.get(id) { greet(user); }
+
+let slice = &values[start..end];
+
+let point = Point { x: 3, y: 4 };
+
+let color = Color::Rgb { red: 1, green: 2, blue: 3 };
+
+impl<T: Display> Render for Wrapper<T> { fn render(&self) -> String { self.0.to_string() } }
+
+where T: Clone + Send + Sync;
+
+let map: std::collections::HashMap<String, usize> = Default::default();
+
+let result = items.iter().try_fold(0, |sum, item| Ok(sum + item.parse::<i32>()?));
+
+let names = users.iter().filter_map(|user| user.nickname.as_deref());
+
+let pair = ("wpm", 60.0);
+
+pub(crate) fn internal_api() {}
+
+#[cfg(test)]
+
+mod tests { use super::*; }
+
+assert_eq!(format!("{name}"), "ttype");
+
+let path = std::path::Path::new("Cargo.toml");
+
+let manifest = env!("CARGO_PKG_NAME");
+
+cargo test --all-targets
+
+cargo clippy --all-targets -- -D warnings
+
+let handle = async move { work().await };
+
+let _ = handle.await?;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> { Ok(()) }
+
+let bytes = std::fs::read(path)?;
+
+let utf8 = String::from_utf8(bytes)?;
+
+let shared = std::sync::Arc::new(Settings::default());
+
+let cloned = std::sync::Arc::clone(&shared);
+
+let maybe: Option<i32> = Some(42);
+
+let answer = maybe.ok_or("missing answer")?;
+

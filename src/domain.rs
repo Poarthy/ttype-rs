@@ -1,7 +1,12 @@
 use std::collections::BTreeMap;
+use std::fmt;
+use std::str::FromStr;
 use std::time::Duration;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CharCounts {
     pub correct: i32,
     pub incorrect: i32,
@@ -14,14 +19,18 @@ impl CharCounts {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TestKind {
     #[default]
     Timed,
     Words,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ValueEnum,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum TextMode {
     #[default]
     Words,
@@ -32,12 +41,72 @@ pub enum TextMode {
     Python,
     Shell,
     Regex,
+    Rust,
     Custom,
 }
 
 impl TextMode {
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Words,
+            Self::Sentences,
+            Self::Sql,
+            Self::Go,
+            Self::Backend,
+            Self::Python,
+            Self::Shell,
+            Self::Regex,
+            Self::Rust,
+        ]
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Words => "words",
+            Self::Sentences => "sentences",
+            Self::Sql => "sql",
+            Self::Go => "go",
+            Self::Backend => "backend",
+            Self::Python => "python",
+            Self::Shell => "shell",
+            Self::Regex => "regex",
+            Self::Rust => "rust",
+            Self::Custom => "custom",
+        }
+    }
+
     pub const fn commits_words_on_space(self) -> bool {
         matches!(self, Self::Words | Self::Sentences | Self::Custom)
+    }
+}
+
+impl fmt::Display for TextMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown text mode {0:?}")]
+pub struct ParseTextModeError(pub String);
+
+impl FromStr for TextMode {
+    type Err = ParseTextModeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "words" => Ok(Self::Words),
+            "sentences" => Ok(Self::Sentences),
+            "sql" => Ok(Self::Sql),
+            "go" => Ok(Self::Go),
+            "backend" => Ok(Self::Backend),
+            "python" => Ok(Self::Python),
+            "shell" => Ok(Self::Shell),
+            "regex" => Ok(Self::Regex),
+            "rust" => Ok(Self::Rust),
+            "custom" => Ok(Self::Custom),
+            _ => Err(ParseTextModeError(value.to_owned())),
+        }
     }
 }
 
