@@ -23,7 +23,7 @@ jobs:
             os: linux
             arch: arm64
             linux: true
-          - runner: macos-13
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
             os: darwin
             arch: amd64
