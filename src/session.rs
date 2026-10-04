@@ -271,7 +271,11 @@ impl Session {
     }
 
     pub fn input_char(&mut self, character: char) {
-        if matches!(self.state, SessionState::Finished) || character.is_control() {
+        let literal_code_control =
+            !self.config.text_mode.commits_words_on_space() && matches!(character, '\n' | '\t');
+        if matches!(self.state, SessionState::Finished)
+            || (character.is_control() && !literal_code_control)
+        {
             return;
         }
 

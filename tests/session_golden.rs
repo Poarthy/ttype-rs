@@ -46,6 +46,16 @@ fn word_space_skips_remainder_but_code_space_is_literal() {
 }
 
 #[test]
+fn code_mode_counts_tabs_and_newlines_as_literal_practice_characters() {
+    let (mut code, _) = timed("a\t{\n}", TextMode::Rust);
+    for character in ['a', '\t', '{', '\n', '}'] {
+        code.input_char(character);
+    }
+    assert_eq!(code.input_text(), "a\t{\n}");
+    assert_eq!(code.counts().correct, 5);
+}
+
+#[test]
 fn extras_are_capped_but_every_keystroke_hurts_accuracy() {
     let (mut session, _) = timed("cat dog", TextMode::Words);
     for character in "cat".chars() {

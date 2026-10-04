@@ -10,9 +10,11 @@ use crate::replay::{Replay, ReplayEvent, ReplayEventKind};
 
 const HISTORY_LIMIT: usize = 1000;
 const REPLAY_MAGIC: &[u8] = b"TTRP";
+const REPLAY_LIMIT: usize = 50;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StoredResult {
+    pub id: String,
     pub timestamp: String,
     pub mode: TextMode,
     pub tag: String,
@@ -56,6 +58,10 @@ pub enum StorageError {
     Json(#[from] serde_json::Error),
     #[error("corrupt replay")]
     CorruptReplay,
+    #[error("invalid replay id")]
+    InvalidReplayId,
+    #[error("replay has no events")]
+    EmptyReplay,
 }
 
 /// Go-compatible replay v1: TTRP, version, ULEB sizes, delta milliseconds.
@@ -123,6 +129,50 @@ pub fn decode_replay(data: &[u8]) -> Result<Replay, StorageError> {
     Ok(Replay { target, events })
 }
 
+pub fn save_replay(paths: &Paths, id: &str, replay: &Replay) -> Result<(), StorageError> {
+    validate_replay_id(id)?;
+    if replay.events.is_empty() {
+        return Err(StorageError::EmptyReplay);
+    }
+    let directory = paths.data.join("replays");
+    fs::create_dir_all(&directory)?;
+    atomic_write(&directory.join(format!("{id}.bin")), &encode_replay(replay))?;
+    let mut entries: Vec<_> = fs::read_dir(&directory)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "bin")
+        })
+        .collect();
+    entries.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    let excess = entries.len().saturating_sub(REPLAY_LIMIT);
+    for entry in entries.into_iter().take(excess) {
+        fs::remove_file(entry.path())?;
+    }
+    Ok(())
+}
+
+pub fn load_replay(paths: &Paths, id: &str) -> Result<Replay, StorageError> {
+    validate_replay_id(id)?;
+    decode_replay(&fs::read(
+        paths.data.join("replays").join(format!("{id}.bin")),
+    )?)
+}
+
+fn validate_replay_id(id: &str) -> Result<(), StorageError> {
+    if id.is_empty() || id.contains(['/', '\\', '.']) {
+        return Err(StorageError::InvalidReplayId);
+    }
+    Ok(())
+}
+
 fn put_varint(data: &mut Vec<u8>, mut value: u64) {
     while value >= 128 {
         data.push((value as u8) | 128);
@@ -155,10 +205,17 @@ pub fn load_history(paths: &Paths) -> Result<Vec<StoredResult>, StorageError> {
     }
 }
 
-pub fn save_result(paths: &Paths, result: &RunResult) -> Result<(), StorageError> {
+pub fn save_result(paths: &Paths, result: &RunResult) -> Result<String, StorageError> {
     fs::create_dir_all(&paths.data)?;
     let mut history = load_history(paths)?;
+    let id = format!(
+        "{:016x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos() as u64)
+    );
     history.push(StoredResult {
+        id: id.clone(),
         timestamp: format!("{:?}", std::time::SystemTime::now()),
         mode: result.config.text_mode,
         tag: result.config.tag.clone(),
@@ -169,7 +226,7 @@ pub fn save_result(paths: &Paths, result: &RunResult) -> Result<(), StorageError
     }
     let body = serde_json::to_vec_pretty(&history)?;
     atomic_write(&history_path(paths), &body)?;
-    Ok(())
+    Ok(id)
 }
 
 pub fn clear(paths: &Paths, target: crate::cli::ClearTarget) -> Result<(), StorageError> {

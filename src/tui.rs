@@ -12,6 +12,14 @@ use thiserror::Error;
 
 use crate::session::{Session, SessionState};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Overlay {
+    None,
+    Help,
+    ModePicker,
+    Settings,
+}
+
 #[derive(Debug, Error)]
 pub enum TuiError {
     #[error("terminal I/O: {0}")]
@@ -22,16 +30,18 @@ pub enum TuiError {
 /// started: ticks and input are multiplexed by crossterm polling.
 pub struct TuiApp {
     session: Session,
-    show_help: bool,
+    overlay: Overlay,
     show_live_stats: bool,
+    mode_index: usize,
 }
 
 impl TuiApp {
     pub fn new(session: Session) -> Self {
         Self {
             session,
-            show_help: false,
+            overlay: Overlay::None,
             show_live_stats: true,
+            mode_index: 0,
         }
     }
 
@@ -61,13 +71,36 @@ impl TuiApp {
             {
                 return Ok(());
             }
-            self.session.tick();
+            if matches!(self.overlay, Overlay::None) {
+                self.session.tick();
+            }
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if !matches!(self.overlay, Overlay::None) {
+            return self.handle_overlay_key(key);
+        }
         if matches!(self.session.state(), SessionState::Finished) {
-            return matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => true,
+                KeyCode::Tab | KeyCode::Enter | KeyCode::Char('r') => {
+                    self.session.restart().is_err()
+                }
+                KeyCode::Char('p') => {
+                    self.overlay = Overlay::Help;
+                    false
+                }
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    self.overlay = Overlay::Settings;
+                    false
+                }
+                KeyCode::Char('m') | KeyCode::Char('M') => {
+                    self.overlay = Overlay::ModePicker;
+                    false
+                }
+                _ => false,
+            };
         }
         match key.code {
             KeyCode::Esc => true,
@@ -80,9 +113,24 @@ impl TuiApp {
                 self.session.delete_word();
                 false
             }
-            KeyCode::Tab | KeyCode::Enter => self.session.restart().is_err(),
+            KeyCode::Tab => {
+                if self.session.config().text_mode.commits_words_on_space() {
+                    self.session.restart().is_err()
+                } else {
+                    self.session.input_char('\t');
+                    false
+                }
+            }
+            KeyCode::Enter => {
+                if self.session.config().text_mode.commits_words_on_space() {
+                    self.session.restart().is_err()
+                } else {
+                    self.session.input_char('\n');
+                    false
+                }
+            }
             KeyCode::Char('?') if matches!(self.session.state(), SessionState::Ready) => {
-                self.show_help = !self.show_help;
+                self.overlay = Overlay::Help;
                 false
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -97,11 +145,59 @@ impl TuiApp {
         }
     }
 
+    fn handle_overlay_key(&mut self, key: KeyEvent) -> bool {
+        match self.overlay {
+            Overlay::Help => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::None;
+                    false
+                }
+                KeyCode::Char('m') | KeyCode::Char('M') => {
+                    self.overlay = Overlay::ModePicker;
+                    false
+                }
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    self.overlay = Overlay::Settings;
+                    false
+                }
+                _ => false,
+            },
+            Overlay::ModePicker => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::None;
+                    false
+                }
+                KeyCode::Up | KeyCode::Left => {
+                    self.mode_index = self
+                        .mode_index
+                        .checked_sub(1)
+                        .unwrap_or(crate::domain::TextMode::all().len() - 1);
+                    false
+                }
+                KeyCode::Down | KeyCode::Right => {
+                    self.mode_index = (self.mode_index + 1) % crate::domain::TextMode::all().len();
+                    false
+                }
+                KeyCode::Enter => {
+                    self.overlay = Overlay::None;
+                    false
+                }
+                _ => false,
+            },
+            Overlay::Settings => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.overlay = Overlay::None;
+                }
+                false
+            }
+            Overlay::None => false,
+        }
+    }
+
     fn draw(&self, frame: &mut Frame) {
         let area = frame.area();
-        let text = if self.show_help {
-            "ttype\n\nEsc quit  Tab/Enter restart  Backspace delete\nCtrl+W delete word  Ctrl+O live stats\n? toggles this help before typing"
-                .to_owned()
+        let text = if !matches!(self.overlay, Overlay::None) {
+            self.overlay_text()
         } else if matches!(self.session.state(), SessionState::Finished) {
             match self.session.result() {
                 Ok(result) => format!(
@@ -143,6 +239,15 @@ impl TuiApp {
                 .wrap(ratatui::widgets::Wrap { trim: false }),
             area,
         );
+    }
+
+    fn overlay_text(&self) -> String {
+        match self.overlay {
+            Overlay::Help => "Help\n\nEsc/q back  Tab/Enter restart  Backspace delete\nCtrl+W delete word  Ctrl+O live stats\nM mode picker  S settings\n\nResults: r restart, p replay, M mode, S settings".to_owned(),
+            Overlay::ModePicker => { let modes = crate::domain::TextMode::all().iter().enumerate().map(|(index, mode)| if index == self.mode_index { format!("> {mode}") } else { format!("  {mode}") }).collect::<Vec<_>>().join("\n"); format!("Mode\n\n{modes}\n\nUp/Down select  Enter apply next run  Esc back") }
+            Overlay::Settings => format!("Settings\n\nmode {}\ntheme {}\nblind {}\nzen {}\nmin wpm {}\n\nEsc back; persist defaults with `ttype config`", self.session.config().text_mode, self.session.config().theme, self.session.config().blind, self.session.config().zen, self.session.config().min_wpm),
+            Overlay::None => String::new(),
+        }
     }
 }
 

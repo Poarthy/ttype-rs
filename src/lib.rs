@@ -12,3 +12,4 @@ pub mod stats;
 pub mod storage;
 pub mod text;
 pub mod tui;
+pub mod update;

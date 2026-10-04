@@ -1,0 +1,53 @@
+.TH TTYPE 1
+.SH NAME
+ttype \- terminal typing practice
+.SH SYNOPSIS
+.B ttype
+[OPTIONS] [COMMAND]
+.SH DESCRIPTION
+Practice prose and code typing in a terminal. Built-in modes include words,
+sentences, go, python, sql, shell, regex, backend, and rust.
+.SH COMMANDS
+.TP
+.B run
+Start a typing test.
+.TP
+.B config
+Show or change saved defaults.
+.TP
+.B history
+Show recorded test results.
+.TP
+.B stats
+Show aggregate scores.
+.TP
+.B clear
+Delete history, languages, or all saved data.
+.TP
+.B doctor
+Check terminal and data directory support.
+.TP
+.B update
+Check for and install a verified release.
+.TP
+.B completion
+Generate bash, zsh, fish, or PowerShell completion.
+.SH OPTIONS
+.TP
+.B --mode MODE
+Select words, sentences, sql, go, backend, python, shell, regex, or rust.
+.TP
+.B --time SECONDS
+Run a timed test.
+.TP
+.B --words COUNT
+Run a word-count test.
+.TP
+.B --blind
+Hide typed correctness until word completion.
+.TP
+.B --zen
+Hide the test HUD.
+.TP
+.B --min-wpm WPM
+Fail once a run falls below WPM after the initial grace period.

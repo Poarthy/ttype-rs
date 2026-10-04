@@ -76,14 +76,28 @@ fn run_test(args: crate::cli::RunArgs) -> Result<()> {
     let session = Session::new(configuration, target, RealClock::new())?;
     let finished = TuiApp::new(session).run()?;
     if let Ok(result) = finished.result() {
-        persist_result(&paths, &args, &result)?;
+        persist_result(&paths, &args, &result, finished.target(), finished.events())?;
     }
     Ok(())
 }
 
-fn persist_result(paths: &Paths, args: &crate::cli::RunArgs, result: &RunResult) -> Result<()> {
+fn persist_result(
+    paths: &Paths,
+    args: &crate::cli::RunArgs,
+    result: &RunResult,
+    target: &str,
+    events: &[crate::replay::ReplayEvent],
+) -> Result<()> {
     if !args.no_save {
-        storage::save_result(paths, result)?;
+        let id = storage::save_result(paths, result)?;
+        storage::save_replay(
+            paths,
+            &id,
+            &crate::replay::Replay {
+                target: target.to_owned(),
+                events: events.to_vec(),
+            },
+        )?;
     }
     if let Some(path) = &args.result_file {
         let body = serde_json::json!({ "version": 1, "status": if result.failed { "failed_min_wpm" } else { "completed" }, "duration_s": result.duration.as_secs_f64(), "wpm": result.wpm, "raw": result.raw_wpm, "accuracy": result.accuracy, "consistency": result.consistency, "mode": result.config.text_mode.as_str(), "tag": result.config.tag });
