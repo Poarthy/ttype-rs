@@ -358,10 +358,14 @@ fn run_update() -> Result<()> {
     // make a network request for an update they cannot apply.
     match plan.kind {
         crate::update::InstallKind::Source => {
-            return Err(anyhow!("ttype was built from source; pull and rebuild it to update"));
+            return Err(anyhow!(
+                "ttype was built from source; pull and rebuild it to update"
+            ));
         }
         crate::update::InstallKind::PackageManager => {
-            return Err(anyhow!("ttype was installed by a package manager; update it there"));
+            return Err(anyhow!(
+                "ttype was installed by a package manager; update it there"
+            ));
         }
         crate::update::InstallKind::ReleaseScript => {}
     }
