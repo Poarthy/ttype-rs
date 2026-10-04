@@ -1,13 +1,18 @@
 use std::fs;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
 use ttype_core::config::Paths;
 use ttype_core::domain::{RunResult, TestConfig, TestKind, TextMode, WordResult};
 use ttype_core::storage::{export_csv, list_results, save_result};
 
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
 fn paths() -> Paths {
-    let root = std::env::temp_dir().join(format!("ttype-rs-history-{}", std::process::id()));
+    let fixture = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let root =
+        std::env::temp_dir().join(format!("ttype-rs-history-{}-{fixture}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     Paths {
         config: root.join("config"),
