@@ -1,0 +1,4 @@
+# Normalize every text file to LF in the working tree on every platform.
+# The release gate runs on windows-2022, where a CRLF checkout would turn
+# include_str! corpora into "\r\n\r\n" separators and break the parser tests.
+* text=auto eol=lf
