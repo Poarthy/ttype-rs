@@ -11,6 +11,8 @@ pub mod config;
 pub mod custom_text;
 pub mod doctor;
 pub mod domain;
+pub mod langcache;
+pub mod lock;
 pub mod replay;
 pub mod result_file;
 pub mod session;

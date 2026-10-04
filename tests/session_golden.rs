@@ -153,6 +153,32 @@ fn session_uses_the_one_second_rating_floor_and_partial_second_rule() {
 }
 
 #[test]
+fn completed_session_keeps_one_result_identity() {
+    let config = TestConfig {
+        kind: TestKind::Words,
+        word_count: 1,
+        text_mode: TextMode::Words,
+        ..TestConfig::default()
+    };
+    let clock = FakeClock::new();
+    let mut session = match Session::new(config, "x", clock) {
+        Ok(session) => session,
+        Err(error) => panic!("session should start: {error}"),
+    };
+    session.input_char('x');
+    let first = match session.result() {
+        Ok(result) => result,
+        Err(error) => panic!("first result: {error}"),
+    };
+    let second = match session.result() {
+        Ok(result) => result,
+        Err(error) => panic!("second result: {error}"),
+    };
+    assert_eq!(first.id, second.id);
+    assert_eq!(first.timestamp, second.timestamp);
+}
+
+#[test]
 fn min_wpm_only_fails_after_five_second_grace() {
     let clock = FakeClock::new();
     let config = TestConfig {

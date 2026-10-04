@@ -62,6 +62,7 @@ pub struct Session {
     started_wall: Option<SystemTime>,
     ended_at: Option<Duration>,
     ended_wall: Option<SystemTime>,
+    result_id: String,
     caps_inversions: i32,
     seed: i64,
     wpm_history: Vec<f64>,
@@ -74,6 +75,7 @@ pub struct Session {
     extras: BTreeMap<usize, Vec<char>>,
     extras_revision: usize,
     word_at: Vec<usize>,
+    word_lines: Vec<usize>,
     missed: Vec<bool>,
 }
 
@@ -86,7 +88,7 @@ impl Session {
     where
         C: Clock + 'static,
     {
-        Self::from_source(config, Box::new(StaticText(target.into())), clock)
+        Self::from_source(config, Box::new(StaticText::new(target)), clock)
     }
 
     pub fn from_source<C>(
@@ -116,6 +118,7 @@ impl Session {
             started_wall: None,
             ended_at: None,
             ended_wall: None,
+            result_id: String::new(),
             caps_inversions: 0,
             seed,
             wpm_history: Vec::new(),
@@ -128,6 +131,7 @@ impl Session {
             extras: BTreeMap::new(),
             extras_revision: 0,
             word_at: Vec::new(),
+            word_lines: Vec::new(),
             missed: Vec::new(),
         };
         session.load_target()?;
@@ -192,6 +196,10 @@ impl Session {
 
     pub fn events(&self) -> &[ReplayEvent] {
         &self.events
+    }
+
+    pub fn word_lines(&self) -> &[usize] {
+        &self.word_lines
     }
 
     pub fn wpm_history(&self) -> &[f64] {
@@ -262,6 +270,7 @@ impl Session {
         self.started_wall = None;
         self.ended_at = None;
         self.ended_wall = None;
+        self.result_id.clear();
         self.caps_inversions = 0;
         self.wpm_history.clear();
         self.seconds.clear();
@@ -438,7 +447,7 @@ impl Session {
         let rated_elapsed = self.elapsed().max(MIN_RATED_TIME);
         let (raw_wpm_history, error_history) = self.per_second_samples();
         Ok(RunResult {
-            id: result_id(),
+            id: self.result_id.clone(),
             timestamp: self
                 .ended_wall
                 .map(crate::time::rfc3339_from_system_time)
@@ -495,7 +504,7 @@ impl Session {
             let end = word_end_at(&self.target_chars, start);
             let word_index = self.word_at[start];
             let mut word = WordResult {
-                line: 0,
+                line: self.word_lines.get(word_index).copied().unwrap_or_default(),
                 expected: self.target_chars[start..end].iter().collect(),
                 typed: String::new(),
                 missed: self.missed[word_index],
@@ -516,7 +525,7 @@ impl Session {
     }
 
     fn load_target(&mut self) -> Result<(), SessionError> {
-        let target = self.source.generate(&GenerateOptions {
+        let options = GenerateOptions {
             mode: self.config.text_mode,
             word_limit: if self.config.is_words_mode() {
                 self.config.word_count
@@ -530,7 +539,9 @@ impl Session {
             zen: self.config.zen,
             min_wpm: self.config.min_wpm,
             seed: self.seed,
-        })?;
+        };
+        let target = self.source.generate(&options)?;
+        self.word_lines = self.source.word_lines(&options).unwrap_or_default();
         self.target_chars = target.chars().collect();
         self.target = target;
         self.index_words();
@@ -747,6 +758,7 @@ impl Session {
 
     fn finish(&mut self) {
         self.record_wpm_snapshot();
+        self.result_id = result_id();
         self.state = SessionState::Finished;
         self.ended_at = Some(self.clock.now());
         self.ended_wall = self

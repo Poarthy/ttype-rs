@@ -14,6 +14,7 @@ use crate::domain::{RunResult, TextMode};
 use crate::result_file::{self, ResultSource};
 use crate::session::Session;
 use crate::storage;
+use crate::text::StaticText;
 use crate::tui::TuiApp;
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -30,17 +31,7 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("ttype {}", crate::BUILD_VERSION);
             Ok(())
         }
-        Some(Command::Languages { command }) => {
-            println!(
-                "languages: {}",
-                if command.is_some() {
-                    "download is not available in this offline build"
-                } else {
-                    "english (built-in)"
-                }
-            );
-            Ok(())
-        }
+        Some(Command::Languages { command }) => run_languages(command),
         Some(Command::Update) => run_update(),
         Some(Command::Uninstall(args)) => run_uninstall(args),
     }
@@ -71,21 +62,36 @@ fn run_test(args: crate::cli::RunArgs) -> Result<()> {
         }
     }
     let custom_source = custom.clone();
-    let target = if let Some(text) = custom {
+    let (target, language_warning) = if let Some(text) = custom {
         configuration = custom_text::with_custom_config(
             configuration,
             &text,
             args.words.is_some(),
             args.time.is_some(),
         );
-        text.split_whitespace().collect::<Vec<_>>().join(" ")
+        (text.split_whitespace().collect::<Vec<_>>().join(" "), None)
     } else {
         if configuration.text_mode == TextMode::Custom {
             return Err(anyhow!(
                 "custom text is piped in or given with --file or --text, not --mode"
             ));
         }
-        builtin_provider().generate(&crate::domain::GenerateOptions {
+        let (provider, warning) = match provider_for_config(&paths, &configuration) {
+            Ok(provider) => (provider, None),
+            Err(_error)
+                if !matches!(args.output, Some(OutputFormat::Json))
+                    && !configuration.language.is_empty() =>
+            {
+                let name = crate::langcache::display_name(&configuration.language);
+                configuration.language.clear();
+                (
+                    builtin_provider(),
+                    Some(format!("couldn't load {name}, so this is english")),
+                )
+            }
+            Err(error) => return Err(error),
+        };
+        let target = provider.generate(&crate::domain::GenerateOptions {
             mode: configuration.text_mode,
             word_limit: configuration.word_count,
             language: configuration.language.clone(),
@@ -93,13 +99,32 @@ fn run_test(args: crate::cli::RunArgs) -> Result<()> {
             numbers: configuration.numbers,
             seed: configuration.seed,
             ..crate::domain::GenerateOptions::default()
-        })?
+        })?;
+        (target, warning)
     };
     if !io::stdout().is_terminal() && !matches!(args.output, Some(OutputFormat::Json)) {
         return Err(anyhow!("interactive typing requires a terminal"));
     }
-    let session = Session::new(configuration, target, RealClock::new())?;
-    let application = TuiApp::new(session).with_paths(paths.clone());
+    let custom_word_lines = custom_source.as_deref().map(crate::custom_text::word_lines);
+    let session = if let Some(lines) = custom_word_lines {
+        Session::from_source(
+            configuration,
+            Box::new(StaticText::with_word_lines(target.clone(), lines)),
+            RealClock::new(),
+        )?
+    } else {
+        Session::new(configuration, target, RealClock::new())?
+    };
+    let mut application = TuiApp::new(session)
+        .with_paths(paths.clone())
+        .with_no_save(args.no_save)
+        .with_quit_on_finish(matches!(args.output, Some(OutputFormat::Json)));
+    if let Some(receiver) = auto_update_receiver(&paths, &settings, &args) {
+        application = application.with_update_messages(receiver);
+    }
+    if let Some(warning) = language_warning {
+        application = application.with_notice(warning);
+    }
     let finished = if matches!(args.output, Some(OutputFormat::Json)) && !io::stdout().is_terminal()
     {
         run_tui_on_controlling_terminal(application)?
@@ -107,7 +132,7 @@ fn run_test(args: crate::cli::RunArgs) -> Result<()> {
         application.run()?
     };
     if let Ok(result) = finished.result() {
-        persist_result(&paths, &args, &result, finished.target(), finished.events())?;
+        persist_result_file(&args, &result, finished.target())?;
         if matches!(args.output, Some(OutputFormat::Json)) {
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
@@ -119,6 +144,53 @@ fn run_test(args: crate::cli::RunArgs) -> Result<()> {
         result_file::write(path, None, false, source)?;
     }
     Ok(())
+}
+
+fn provider_for_config(
+    paths: &Paths,
+    configuration: &crate::domain::TestConfig,
+) -> Result<crate::text::TextProvider> {
+    let provider = builtin_provider();
+    if configuration.text_mode != TextMode::Words || configuration.language.is_empty() {
+        return Ok(provider);
+    }
+    let words = crate::langcache::LanguageCache::new(&paths.data)
+        .words(&configuration.language)
+        .with_context(|| format!("language {:?}", configuration.language))?;
+    Ok(provider.with_mode_items(TextMode::Words, words))
+}
+
+fn run_languages(command: Option<crate::cli::LanguagesCommand>) -> Result<()> {
+    if command.is_some() {
+        return Err(anyhow!(
+            "languages download is unavailable: this build permits network access only for ttype update"
+        ));
+    }
+    let paths = Paths::discover()?;
+    println!("english (built-in)");
+    for id in crate::langcache::LanguageCache::new(paths.data).installed() {
+        println!("{}", crate::langcache::display_name(&id));
+    }
+    Ok(())
+}
+
+fn auto_update_receiver(
+    paths: &Paths,
+    settings: &config::Settings,
+    args: &crate::cli::RunArgs,
+) -> Option<std::sync::mpsc::Receiver<crate::update::AutoUpdateNotice>> {
+    if matches!(args.output, Some(OutputFormat::Json)) || std::env::var_os("CI").is_some() {
+        return None;
+    }
+    let mode = crate::update::automatic_update_mode(
+        &settings.update,
+        std::env::var("TTYPE_UPDATE").ok().as_deref(),
+    );
+    crate::update::spawn_auto_update(
+        paths.data.join("update.json"),
+        crate::BUILD_VERSION.to_owned(),
+        mode,
+    )
 }
 
 #[cfg(unix)]
@@ -141,26 +213,7 @@ fn run_tui_on_controlling_terminal(application: TuiApp) -> Result<Session> {
     application.run_with_writer(terminal).map_err(Into::into)
 }
 
-fn persist_result(
-    paths: &Paths,
-    args: &crate::cli::RunArgs,
-    result: &RunResult,
-    target: &str,
-    events: &[crate::replay::ReplayEvent],
-) -> Result<()> {
-    if !args.no_save {
-        let id = storage::save_result(paths, result)?;
-        if !events.is_empty() {
-            storage::save_replay(
-                paths,
-                &id,
-                &crate::replay::Replay {
-                    target: target.to_owned(),
-                    events: events.to_vec(),
-                },
-            )?;
-        }
-    }
+fn persist_result_file(args: &crate::cli::RunArgs, result: &RunResult, target: &str) -> Result<()> {
     if let Some(path) = &args.result_file {
         let source = if result.config.text_mode == TextMode::Custom {
             ResultSource {
@@ -244,16 +297,6 @@ fn run_history(args: crate::cli::HistoryArgs) -> Result<()> {
 
 fn run_stats(args: crate::cli::StatsArgs) -> Result<()> {
     let paths = Paths::discover()?;
-    let records = storage::filter_results(
-        storage::load_history(&paths)?,
-        args.mode,
-        args.tag.as_deref(),
-        args.exclude_failed,
-    );
-    if records.is_empty() {
-        println!("No test history yet.");
-        return Ok(());
-    }
     if args.export.is_some() {
         print!(
             "{}",
@@ -261,34 +304,29 @@ fn run_stats(args: crate::cli::StatsArgs) -> Result<()> {
         );
         return Ok(());
     }
-    let count = records.len() as f64;
-    let average_wpm = records.iter().map(|item| item.wpm).sum::<f64>() / count;
-    let average_accuracy = records.iter().map(|item| item.accuracy).sum::<f64>() / count;
-    let best = records.iter().map(|item| item.wpm).fold(0.0, f64::max);
-    println!(
-        "tests {}\naverage wpm {:.2}\naverage accuracy {:.2}%\nbest wpm {:.2}",
-        records.len(),
-        average_wpm,
-        average_accuracy,
-        best
+    let summary = storage::summarize(&paths, args.mode, args.tag.as_deref(), args.exclude_failed)?;
+    let trend = if args.trend {
+        storage::filter_results(
+            storage::load_history(&paths)?,
+            args.mode,
+            args.tag.as_deref(),
+            args.exclude_failed,
+        )
+        .into_iter()
+        .map(|item| item.wpm)
+        .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    print!(
+        "{}",
+        crate::tui::render_stats_text(&summary, &trend, terminal_width())
     );
-    if args.trend {
-        let values: Vec<_> = records.iter().rev().map(|item| item.wpm).collect();
-        println!("trend {}", render_sparkline(&values));
-    }
     Ok(())
 }
 
-fn render_sparkline(values: &[f64]) -> String {
-    let glyphs: Vec<char> = "▁▂▃▄▅▆▇█".chars().collect();
-    let max = values.iter().copied().fold(0.0, f64::max).max(1.0);
-    values
-        .iter()
-        .map(|value| {
-            glyphs
-                [((value / max * (glyphs.len() - 1) as f64).round() as usize).min(glyphs.len() - 1)]
-        })
-        .collect()
+fn terminal_width() -> usize {
+    crossterm::terminal::size().map_or(72, |(width, _)| usize::from(width).max(1))
 }
 
 fn history_language(id: &str) -> String {
@@ -369,22 +407,22 @@ fn run_update() -> Result<()> {
         }
         crate::update::InstallKind::ReleaseScript => {}
     }
-    let state = crate::update::check_daily(&state_path, local, crate::update::RELEASES_URL)?;
-    if state.latest.is_empty() {
+    let latest = crate::update::latest_release(crate::update::RELEASES_URL)?;
+    if !crate::update::newer_version(&latest, local) {
         println!("ttype {local} is already the latest version.");
         return Ok(());
     }
-    println!("Downloading ttype {}...", state.latest);
+    println!("Downloading ttype {latest}...");
     crate::update::install(
         &plan.executable,
         local,
-        &state.latest,
+        &latest,
         crate::update::RELEASES_URL,
         &plan,
         true,
         &state_path,
     )?;
-    println!("Updated to ttype {}.", state.latest);
+    println!("Updated to ttype {latest}.");
     Ok(())
 }
 

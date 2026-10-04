@@ -16,5 +16,11 @@ Final validation used the constrained one-job Cargo configuration in
 ```text
 cargo fmt --all --check                         PASS
 cargo clippy --all-targets -j 1 -- -D warnings PASS
-cargo test --all-targets -j 1                  PASS (45 tests)
+cargo test --all-targets -j 1                  PASS (45 tests before final audit)
 ```
+
+The final-audit delta adds cached-language support, Go's braille chart and
+stats presentation, result/replay persistence at session completion, advisory
+storage locking, automatic-update exit handling, release build stamping, and
+Go's command-error exit status. Its final one-job gate is recorded with the
+release commits.

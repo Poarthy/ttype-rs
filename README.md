@@ -24,6 +24,9 @@ Settings use `$XDG_CONFIG_HOME/ttype/config.toml` (or the platform config
 directory); history, replays, language data, and update state use
 `$XDG_DATA_HOME/ttype`. The app sends no telemetry. Built-in practice text is
 compiled into the executable. Only `ttype update` can initiate a network call.
+`ttype languages` lists English plus compatible cached lists already present in
+`$XDG_DATA_HOME/ttype/languages`; `languages download` remains unavailable so
+normal practice never fetches a catalog.
 
 ## Development Gate
 
@@ -45,4 +48,6 @@ run. Replay sidecars use the Go-compatible `TTRP` v1 format and retain the
 newest 50 files. `ttype update` is the only network-enabled operation: it
 checks the GitHub release redirect daily, verifies SHA-256 checksums, runs the
 downloaded binary with `--version`, and atomically swaps it only when the
-installed copy is an owned release build.
+installed copy is an owned release build. Interactive runs honor `update =
+"auto"`, `"notify"`, or `"off"` (and `TTYPE_UPDATE` overrides it); JSON and
+CI runs remain quiet and offline.

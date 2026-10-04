@@ -1,4 +1,6 @@
 use std::fs;
+use std::sync::Arc;
+use std::thread;
 
 use ttype_core::config::Paths;
 use ttype_core::domain::{RunResult, TestConfig, TestKind, TextMode, WordResult};
@@ -98,4 +100,53 @@ fn saves_go_compatible_flat_results_and_retains_only_missed_words() {
         export_csv(&paths, None, None, false).unwrap_or_else(|error| panic!("export: {error}"));
     assert!(csv.starts_with("timestamp,mode,language,test,wpm,raw_wpm"));
     assert!(csv.contains(",rust,spanish,3w,92.50,98.25,96.50,88.00,12,false,practice"));
+}
+
+#[test]
+fn concurrent_saves_keep_every_completed_result() {
+    let paths = Arc::new(paths());
+    let mut workers = Vec::new();
+    for index in 0..40 {
+        let paths = Arc::clone(&paths);
+        workers.push(thread::spawn(move || {
+            let result = RunResult {
+                id: format!("concurrent-{index}"),
+                timestamp: "2026-04-01T12:00:00Z".to_owned(),
+                config: TestConfig::default(),
+                wpm: 60.0,
+                raw_wpm: 60.0,
+                accuracy: 100.0,
+                consistency: 0.0,
+                correct: 0,
+                incorrect: 0,
+                keystrokes_correct: 0,
+                keystrokes_incorrect: 0,
+                skipped: 0,
+                total_chars: 0,
+                duration: std::time::Duration::ZERO,
+                seed: 0,
+                wpm_history: Vec::new(),
+                raw_wpm_history: Vec::new(),
+                error_history: Vec::new(),
+                char_errors: Default::default(),
+                failed: false,
+                failure_reason: String::new(),
+                words: Vec::new(),
+                started_at: String::new(),
+            };
+            save_result(&paths, &result)
+        }));
+    }
+    for worker in workers {
+        match worker.join() {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => panic!("save result: {error}"),
+            Err(_) => panic!("concurrent save panicked"),
+        }
+    }
+    let rows = match list_results(&paths, 0) {
+        Ok(rows) => rows,
+        Err(error) => panic!("list results: {error}"),
+    };
+    assert_eq!(rows.len(), 40);
 }

@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::config::{Paths, atomic_write};
 use crate::domain::{RunResult, TestConfig, TestKind, TextMode, WordResult};
+use crate::lock::lock_directory;
 use crate::replay::{Replay, ReplayEvent, ReplayEventKind};
 
 const HISTORY_LIMIT: usize = 1000;
@@ -206,6 +207,18 @@ pub struct PersonalBests {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct StatsSummary {
+    pub total_tests: usize,
+    pub filter_mode: String,
+    pub filter_tag: String,
+    pub average_wpm: f64,
+    pub average_accuracy: f64,
+    pub best_wpm: f64,
+    pub recent_average_wpm: f64,
+    pub personal_best: PersonalBests,
+}
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("history I/O: {0}")]
@@ -247,7 +260,7 @@ pub fn list_results(paths: &Paths, limit: usize) -> Result<Vec<StoredResult>, St
 }
 
 pub fn save_result(paths: &Paths, result: &RunResult) -> Result<String, StorageError> {
-    fs::create_dir_all(&paths.data)?;
+    let _lock = lock_directory(&paths.data)?;
     let mut history = load_history(paths)?;
     let id = if result.id.is_empty() {
         new_result_id()
@@ -318,6 +331,50 @@ pub fn filter_results(
             && (!exclude_failed || !result.failed)
     });
     results
+}
+
+pub fn summarize(
+    paths: &Paths,
+    mode: Option<TextMode>,
+    tag: Option<&str>,
+    exclude_failed: bool,
+) -> Result<StatsSummary, StorageError> {
+    let records = filter_results(load_history(paths)?, mode, tag, exclude_failed);
+    let personal_best = load_bests(paths)?;
+    let mut summary = StatsSummary {
+        total_tests: records.len(),
+        filter_mode: mode.map_or_else(String::new, |value| value.to_string()),
+        filter_tag: tag.unwrap_or_default().to_owned(),
+        personal_best,
+        ..StatsSummary::default()
+    };
+    if records.is_empty() {
+        return Ok(summary);
+    }
+
+    summary.average_wpm =
+        round2(records.iter().map(|item| item.wpm).sum::<f64>() / records.len() as f64);
+    summary.average_accuracy =
+        round2(records.iter().map(|item| item.accuracy).sum::<f64>() / records.len() as f64);
+    let only_custom = mode == Some(TextMode::Custom);
+    summary.best_wpm = records
+        .iter()
+        .filter(|item| only_custom || item.text_mode() != TextMode::Custom)
+        .map(|item| item.wpm)
+        .fold(0.0, f64::max);
+    let recent_start = records.len().saturating_sub(10);
+    summary.recent_average_wpm = round2(
+        records[recent_start..]
+            .iter()
+            .map(|item| item.wpm)
+            .sum::<f64>()
+            / records[recent_start..].len() as f64,
+    );
+    Ok(summary)
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 pub fn export_csv(

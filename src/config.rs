@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::cli::{ConfigArgs, ThemeName, UpdateMode};
 use crate::domain::{TestConfig, TestKind, TextMode};
+use crate::lock::lock_directory;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Settings {
@@ -84,6 +85,8 @@ pub enum ConfigError {
     Serialize(#[from] toml::ser::Error),
     #[error("word count must be at least 1")]
     WordCount,
+    #[error("duration must be positive")]
+    Duration,
     #[error("custom needs text each time, so it can't be the default mode")]
     CustomMode,
 }
@@ -98,13 +101,16 @@ pub fn load(paths: &Paths) -> Result<Settings, ConfigError> {
 }
 
 pub fn save(paths: &Paths, settings: &Settings) -> Result<(), ConfigError> {
-    fs::create_dir_all(&paths.config)?;
+    let _lock = lock_directory(&paths.config)?;
     let body = toml::to_string_pretty(settings)?;
     Ok(atomic_write(&paths.config_file(), body.as_bytes())?)
 }
 
 pub fn apply(settings: &mut Settings, args: &ConfigArgs) -> Result<(), ConfigError> {
     if let Some(value) = args.default_time {
+        if value == 0 {
+            return Err(ConfigError::Duration);
+        }
         settings.default_duration = value;
         settings.default_word_count = 0;
     }
@@ -164,7 +170,10 @@ pub fn resolve_test_config(settings: &Settings, args: &crate::cli::RunArgs) -> T
             TestKind::Timed
         },
         duration: std::time::Duration::from_secs(
-            args.time.unwrap_or(settings.default_duration).max(1),
+            args.time
+                .filter(|value| *value > 0)
+                .unwrap_or(settings.default_duration)
+                .max(1),
         ),
         word_count,
         text_mode: args.mode.unwrap_or(settings.default_mode),

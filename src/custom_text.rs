@@ -104,6 +104,16 @@ pub fn clean(raw: &str) -> String {
     lines.join("\n").trim_end_matches('\n').to_owned()
 }
 
+/// Records the original one-based line for each word after normalization.
+/// Go keeps this metadata out of the target string and writes it only for
+/// missed custom-text words in result/history JSON.
+pub fn word_lines(text: &str) -> Vec<usize> {
+    text.split('\n')
+        .enumerate()
+        .flat_map(|(index, line)| std::iter::repeat_n(index + 1, line.split_whitespace().count()))
+        .collect()
+}
+
 // Go's regexp recognizes CSI, OSC (BEL/ST terminated), and a two-byte ESC
 // sequence. This scanner intentionally accepts that same useful superset.
 fn strip_ansi(raw: &str) -> String {

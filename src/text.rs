@@ -20,14 +20,41 @@ pub enum TextError {
 
 pub trait TextSource {
     fn generate(&self, options: &GenerateOptions) -> Result<String, TextError>;
+
+    fn word_lines(&self, _: &GenerateOptions) -> Option<Vec<usize>> {
+        None
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct StaticText(pub String);
+pub struct StaticText {
+    text: String,
+    word_lines: Vec<usize>,
+}
+
+impl StaticText {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            word_lines: Vec::new(),
+        }
+    }
+
+    pub fn with_word_lines(text: impl Into<String>, word_lines: Vec<usize>) -> Self {
+        Self {
+            text: text.into(),
+            word_lines,
+        }
+    }
+}
 
 impl TextSource for StaticText {
     fn generate(&self, _: &GenerateOptions) -> Result<String, TextError> {
-        Ok(self.0.clone())
+        Ok(self.text.clone())
+    }
+
+    fn word_lines(&self, _: &GenerateOptions) -> Option<Vec<usize>> {
+        (!self.word_lines.is_empty()).then(|| self.word_lines.clone())
     }
 }
 
@@ -43,6 +70,11 @@ impl TextProvider {
 
     pub fn items(&self) -> &BTreeMap<TextMode, Vec<String>> {
         &self.items
+    }
+
+    pub fn with_mode_items(mut self, mode: TextMode, items: Vec<String>) -> Self {
+        self.items.insert(mode, items);
+        self
     }
 
     pub fn generate(&self, options: &GenerateOptions) -> Result<String, TextError> {
