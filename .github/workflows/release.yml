@@ -90,4 +90,17 @@ jobs:
         run: (cd dist && sha256sum ttype_*.tar.gz > checksums.txt)
       - uses: softprops/action-gh-release@v2.2.2
         with:
+          name: ttype-rs ${{ github.ref_name }} — Rust rewrite of alirezaudev/ttype
+          body: |
+            **ttype-rs** is the Rust rewrite of
+            [alirezaudev/ttype](https://github.com/alirezaudev/ttype) — the
+            original Go terminal typing trainer, reimplemented in safe Rust.
+
+            Each `ttype_<version>_<os>_<arch>.tar.gz` archive contains the
+            binary, the `ttype.1` man page, shell completions (bash, zsh, fish,
+            PowerShell), `README.md`, and `LICENSE`. Verify downloads against
+            `checksums.txt` (`sha256sum -c checksums.txt --ignore-missing`).
+
+            MIT — original © Alireza Mousavi, Rust implementation © Poarthy.
+          generate_release_notes: true
           files: dist/*
