@@ -6,79 +6,93 @@ ttype \- Terminal typing practice
 .SH SYNOPSIS
 \fBttype\fR [\fB\-\-time\fR] [\fB\-\-words\fR] [\fB\-\-language\fR] [\fB\-\-mode\fR] [\fB\-\-theme\fR] [\fB\-\-width\fR] [\fB\-\-punctuation\fR] [\fB\-\-numbers\fR] [\fB\-\-blind\fR] [\fB\-\-zen\fR] [\fB\-\-min\-wpm\fR] [\fB\-\-seed\fR] [\fB\-\-output\fR] [\fB\-\-file\fR] [\fB\-\-text\fR] [\fB\-\-no\-save\fR] [\fB\-\-result\-file\fR] [\fB\-\-tag\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
-Terminal typing practice
+A terminal\-first typing test. Use \-\-time for timed tests or \-\-words for word count tests.
 .SH OPTIONS
 .TP
 \fB\-\-time\fR \fI<TIME>\fR
-
+Timed test duration in seconds
 .TP
 \fB\-\-words\fR \fI<WORDS>\fR
-
+Word count test
 .TP
 \fB\-\-language\fR \fI<LANGUAGE>\fR
-
+Language id
 .TP
 \fB\-\-mode\fR \fI<MODE>\fR
+Text mode
+.br
 
 .br
 [\fIpossible values: \fRwords, sentences, sql, go, backend, python, shell, regex, rust, custom]
 .TP
 \fB\-\-theme\fR \fI<THEME>\fR
+Color theme
+.br
 
 .br
 [\fIpossible values: \fRdefault, monokai, dracula]
 .TP
 \fB\-\-width\fR \fI<WIDTH>\fR
-
+Typing area width in characters
 .TP
-\fB\-\-punctuation\fR \fI<PUNCTUATION>\fR
+\fB\-\-punctuation\fR [\fI<PUNCTUATION>\fR]
+Inject punctuation between words
+.br
 
 .br
 [\fIpossible values: \fRtrue, false]
 .TP
-\fB\-\-numbers\fR \fI<NUMBERS>\fR
+\fB\-\-numbers\fR [\fI<NUMBERS>\fR]
+Inject numbers into word tests
+.br
 
 .br
 [\fIpossible values: \fRtrue, false]
 .TP
-\fB\-\-blind\fR \fI<BLIND>\fR
+\fB\-\-blind\fR [\fI<BLIND>\fR]
+Hide correctness while typing
+.br
 
 .br
 [\fIpossible values: \fRtrue, false]
 .TP
-\fB\-\-zen\fR \fI<ZEN>\fR
+\fB\-\-zen\fR [\fI<ZEN>\fR]
+Words only: no header or hints
+.br
 
 .br
 [\fIpossible values: \fRtrue, false]
 .TP
 \fB\-\-min\-wpm\fR \fI<MIN_WPM>\fR
-
+Fail the test if WPM drops below this
 .TP
 \fB\-\-seed\fR \fI<SEED>\fR
-
+Random seed for word generation
 .TP
 \fB\-\-output\fR \fI<OUTPUT>\fR
+Print the result instead of showing it
+.br
 
 .br
 [\fIpossible values: \fRjson]
 .TP
 \fB\-\-file\fR \fI<FILE>\fR
-
+Type the text of a file (\- for stdin)
 .TP
 \fB\-\-text\fR \fI<TEXT>\fR
-
+Type this text
 .TP
 \fB\-\-no\-save\fR
-
+Keep this run out of history, bests and replays
 .TP
 \fB\-\-result\-file\fR \fI<RESULT_FILE>\fR
-
+Write the last run as JSON on exit
 .TP
 \fB\-\-tag\fR \fI<TAG>\fR
-
+Label this run
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Print version
