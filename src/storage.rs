@@ -6,8 +6,10 @@ use thiserror::Error;
 
 use crate::config::{Paths, atomic_write};
 use crate::domain::{RunResult, TextMode};
+use crate::replay::{Replay, ReplayEvent, ReplayEventKind};
 
 const HISTORY_LIMIT: usize = 1000;
+const REPLAY_MAGIC: &[u8] = b"TTRP";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StoredResult {
@@ -52,6 +54,93 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("history JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("corrupt replay")]
+    CorruptReplay,
+}
+
+/// Go-compatible replay v1: TTRP, version, ULEB sizes, delta milliseconds.
+pub fn encode_replay(replay: &Replay) -> Vec<u8> {
+    let mut data = Vec::from(REPLAY_MAGIC);
+    data.push(1);
+    put_varint(&mut data, replay.target.len() as u64);
+    data.extend_from_slice(replay.target.as_bytes());
+    put_varint(&mut data, replay.events.len() as u64);
+    let mut previous = 0_u128;
+    for event in &replay.events {
+        data.push(match event.kind {
+            ReplayEventKind::Rune => 0,
+            ReplayEventKind::Backspace => 1,
+            ReplayEventKind::DeleteWord => 2,
+        });
+        let milliseconds = event.offset.as_millis();
+        put_varint(&mut data, milliseconds.saturating_sub(previous) as u64);
+        previous = milliseconds;
+        if let Some(character) = event.character {
+            put_varint(&mut data, character as u32 as u64);
+        }
+    }
+    data
+}
+
+pub fn decode_replay(data: &[u8]) -> Result<Replay, StorageError> {
+    if data.get(..4) != Some(REPLAY_MAGIC) || data.get(4) != Some(&1) {
+        return Err(StorageError::CorruptReplay);
+    }
+    let mut index = 5;
+    let length = read_varint(data, &mut index)? as usize;
+    let target = std::str::from_utf8(
+        data.get(index..index.saturating_add(length))
+            .ok_or(StorageError::CorruptReplay)?,
+    )
+    .map_err(|_| StorageError::CorruptReplay)?
+    .to_owned();
+    index += length;
+    let count = read_varint(data, &mut index)? as usize;
+    let mut events = Vec::with_capacity(count);
+    let mut milliseconds = 0_u64;
+    for _ in 0..count {
+        let tag = *data.get(index).ok_or(StorageError::CorruptReplay)?;
+        index += 1;
+        milliseconds = milliseconds.saturating_add(read_varint(data, &mut index)?);
+        let (kind, character) = match tag {
+            0 => (
+                ReplayEventKind::Rune,
+                char::from_u32(read_varint(data, &mut index)? as u32),
+            ),
+            1 => (ReplayEventKind::Backspace, None),
+            2 => (ReplayEventKind::DeleteWord, None),
+            _ => return Err(StorageError::CorruptReplay),
+        };
+        if tag == 0 && character.is_none() {
+            return Err(StorageError::CorruptReplay);
+        }
+        events.push(ReplayEvent {
+            offset: std::time::Duration::from_millis(milliseconds),
+            kind,
+            character,
+        });
+    }
+    Ok(Replay { target, events })
+}
+
+fn put_varint(data: &mut Vec<u8>, mut value: u64) {
+    while value >= 128 {
+        data.push((value as u8) | 128);
+        value >>= 7;
+    }
+    data.push(value as u8);
+}
+fn read_varint(data: &[u8], index: &mut usize) -> Result<u64, StorageError> {
+    let mut value = 0;
+    for shift in (0..64).step_by(7) {
+        let byte = *data.get(*index).ok_or(StorageError::CorruptReplay)?;
+        *index += 1;
+        value |= u64::from(byte & 127) << shift;
+        if byte < 128 {
+            return Ok(value);
+        }
+    }
+    Err(StorageError::CorruptReplay)
 }
 
 pub fn history_path(paths: &Paths) -> PathBuf {
