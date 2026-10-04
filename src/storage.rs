@@ -1,53 +1,209 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::config::{Paths, atomic_write};
-use crate::domain::{RunResult, TextMode};
+use crate::domain::{RunResult, TestConfig, TestKind, TextMode, WordResult};
 use crate::replay::{Replay, ReplayEvent, ReplayEventKind};
 
 const HISTORY_LIMIT: usize = 1000;
 const REPLAY_MAGIC: &[u8] = b"TTRP";
 const REPLAY_LIMIT: usize = 50;
+static NEXT_RESULT_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// The flat, additive JSON format written by Go's `storedResult`. Keeping the
+/// field names and optional fields makes an existing Go history usable here.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct StoredResult {
     pub id: String,
     pub timestamp: String,
-    pub mode: TextMode,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub test_kind: String,
+    #[serde(default)]
+    pub duration_sec: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub word_count: usize,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text_mode: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub language: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub theme: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub punctuation: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub numbers: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub blind: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub zen: bool,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub width: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub min_wpm: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub seed: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tag: String,
-    pub result: RunResultWire,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RunResultWire {
+    #[serde(default)]
     pub wpm: f64,
+    #[serde(default)]
     pub raw_wpm: f64,
+    #[serde(default)]
     pub accuracy: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub consistency: f64,
+    #[serde(default)]
     pub correct: i32,
+    #[serde(default)]
     pub incorrect: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub keystrokes_correct: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub keystrokes_incorrect: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub skipped: i32,
+    #[serde(default)]
     pub total_chars: i32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wpm_history: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raw_wpm_history: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub error_history: Vec<i32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub char_errors: BTreeMap<String, i32>,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub failed: bool,
-    pub duration_ms: u128,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub failure_reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missed_words: Vec<WordResult>,
 }
 
-impl From<&RunResult> for RunResultWire {
-    fn from(result: &RunResult) -> Self {
+impl StoredResult {
+    pub fn text_mode(&self) -> TextMode {
+        self.text_mode.parse().unwrap_or(TextMode::Words)
+    }
+
+    pub fn kind(&self) -> TestKind {
+        if self.test_kind == "words" {
+            TestKind::Words
+        } else {
+            TestKind::Timed
+        }
+    }
+
+    pub fn test_label(&self) -> String {
+        if self.word_count > 0 {
+            format!("{}w", self.word_count)
+        } else {
+            format!("{}s", self.duration_sec)
+        }
+    }
+
+    pub fn test_config(&self) -> TestConfig {
+        TestConfig {
+            kind: self.kind(),
+            duration: Duration::from_secs(self.duration_sec),
+            word_count: self.word_count,
+            text_mode: self.text_mode(),
+            language: self.language.clone(),
+            theme: if self.theme.is_empty() {
+                "default".to_owned()
+            } else {
+                self.theme.clone()
+            },
+            width: self.width.max(0) as usize,
+            punctuation: self.punctuation,
+            numbers: self.numbers,
+            blind: self.blind,
+            zen: self.zen,
+            min_wpm: self.min_wpm,
+            seed: self.seed,
+            tag: self.tag.clone(),
+        }
+    }
+
+    fn from_result(id: String, timestamp: String, result: &RunResult) -> Self {
+        let config = &result.config;
+        let duration_sec = if config.is_words_mode() {
+            result.duration.as_secs()
+        } else {
+            config.duration.as_secs()
+        };
         Self {
+            id,
+            timestamp,
+            test_kind: match config.kind {
+                TestKind::Timed => "timed".to_owned(),
+                TestKind::Words => "words".to_owned(),
+            },
+            duration_sec,
+            word_count: config.word_count,
+            text_mode: config.text_mode.as_str().to_owned(),
+            language: config.language.clone(),
+            theme: config.theme.clone(),
+            punctuation: config.punctuation,
+            numbers: config.numbers,
+            blind: config.blind,
+            zen: config.zen,
+            width: config.width as i32,
+            min_wpm: config.min_wpm,
+            seed: result.seed,
+            tag: config.tag.clone(),
             wpm: result.wpm,
             raw_wpm: result.raw_wpm,
             accuracy: result.accuracy,
             consistency: result.consistency,
             correct: result.correct,
             incorrect: result.incorrect,
+            keystrokes_correct: result.keystrokes_correct,
+            keystrokes_incorrect: result.keystrokes_incorrect,
+            skipped: result.skipped,
             total_chars: result.total_chars,
+            wpm_history: result.wpm_history.clone(),
+            raw_wpm_history: result.raw_wpm_history.clone(),
+            error_history: result.error_history.clone(),
+            char_errors: result.char_errors.clone(),
             failed: result.failed,
-            duration_ms: result.duration.as_millis(),
+            failure_reason: result.failure_reason.clone(),
+            missed_words: result
+                .words
+                .iter()
+                .filter(|word| word.missed)
+                .cloned()
+                .collect(),
         }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
+}
+fn is_zero_i64(value: &i64) -> bool {
+    *value == 0
+}
+fn is_zero_f64(value: &f64) -> bool {
+    *value == 0.0
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PersonalBests {
+    pub best_wpm: f64,
+    pub best_accuracy: f64,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Error)]
@@ -62,6 +218,151 @@ pub enum StorageError {
     InvalidReplayId,
     #[error("replay has no events")]
     EmptyReplay,
+}
+
+pub fn history_path(paths: &Paths) -> PathBuf {
+    paths.data.join("history.json")
+}
+pub fn bests_path(paths: &Paths) -> PathBuf {
+    paths.data.join("bests.json")
+}
+
+/// Reads storage order (oldest first), matching Go's on-disk history.
+pub fn load_history(paths: &Paths) -> Result<Vec<StoredResult>, StorageError> {
+    match fs::read(history_path(paths)) {
+        Ok(contents) => Ok(serde_json::from_slice(&contents)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(StorageError::Io(error)),
+    }
+}
+
+/// Lists newest first, as the Go `ListResults` store method does.
+pub fn list_results(paths: &Paths, limit: usize) -> Result<Vec<StoredResult>, StorageError> {
+    let mut history = load_history(paths)?;
+    if limit > 0 && history.len() > limit {
+        history = history.split_off(history.len() - limit);
+    }
+    history.reverse();
+    Ok(history)
+}
+
+pub fn save_result(paths: &Paths, result: &RunResult) -> Result<String, StorageError> {
+    fs::create_dir_all(&paths.data)?;
+    let mut history = load_history(paths)?;
+    let id = if result.id.is_empty() {
+        new_result_id()
+    } else {
+        result.id.clone()
+    };
+    let timestamp = if result.timestamp.is_empty() {
+        rfc3339_now()
+    } else {
+        result.timestamp.clone()
+    };
+    let stored = StoredResult::from_result(id.clone(), timestamp, result);
+    history.push(stored.clone());
+    if history.len() > HISTORY_LIMIT {
+        history.drain(..history.len() - HISTORY_LIMIT);
+    }
+    atomic_write(&history_path(paths), &serde_json::to_vec_pretty(&history)?)?;
+    update_bests(paths, &stored)?;
+    Ok(id)
+}
+
+fn new_result_id() -> String {
+    let clock = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos() as u64);
+    let sequence = NEXT_RESULT_ID.fetch_add(1, Ordering::Relaxed);
+    format!("{:016x}", clock ^ sequence)
+}
+
+pub fn load_bests(paths: &Paths) -> Result<PersonalBests, StorageError> {
+    match fs::read(bests_path(paths)) {
+        Ok(contents) => Ok(serde_json::from_slice(&contents)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PersonalBests::default()),
+        Err(error) => Err(StorageError::Io(error)),
+    }
+}
+
+fn update_bests(paths: &Paths, result: &StoredResult) -> Result<(), StorageError> {
+    if result.failed || result.text_mode() == TextMode::Custom {
+        return Ok(());
+    }
+    let mut bests = load_bests(paths)?;
+    let mut changed = false;
+    if result.wpm > bests.best_wpm {
+        bests.best_wpm = result.wpm;
+        changed = true;
+    }
+    if result.accuracy > bests.best_accuracy {
+        bests.best_accuracy = result.accuracy;
+        changed = true;
+    }
+    if changed {
+        bests.updated_at = rfc3339_now();
+        atomic_write(&bests_path(paths), &serde_json::to_vec_pretty(&bests)?)?;
+    }
+    Ok(())
+}
+
+pub fn filter_results(
+    mut results: Vec<StoredResult>,
+    mode: Option<TextMode>,
+    tag: Option<&str>,
+    exclude_failed: bool,
+) -> Vec<StoredResult> {
+    results.retain(|result| {
+        mode.is_none_or(|needle| result.text_mode() == needle)
+            && tag.is_none_or(|needle| result.tag == needle)
+            && (!exclude_failed || !result.failed)
+    });
+    results
+}
+
+pub fn export_csv(
+    paths: &Paths,
+    mode: Option<TextMode>,
+    tag: Option<&str>,
+    exclude_failed: bool,
+) -> Result<String, StorageError> {
+    let rows = filter_results(load_history(paths)?, mode, tag, exclude_failed);
+    let mut output = String::from(
+        "timestamp,mode,language,test,wpm,raw_wpm,accuracy,consistency,errors,failed,tag\n",
+    );
+    for row in rows {
+        let test_label = row.test_label();
+        let fields = [
+            row.timestamp,
+            row.text_mode,
+            row.language,
+            test_label,
+            format!("{:.2}", row.wpm),
+            format!("{:.2}", row.raw_wpm),
+            format!("{:.2}", row.accuracy),
+            format!("{:.2}", row.consistency),
+            row.keystrokes_incorrect.to_string(),
+            row.failed.to_string(),
+            row.tag,
+        ];
+        output.push_str(
+            &fields
+                .iter()
+                .map(|field| csv_field(field))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
+    }
 }
 
 /// Go-compatible replay v1: TTRP, version, ULEB sizes, delta milliseconds.
@@ -102,6 +403,9 @@ pub fn decode_replay(data: &[u8]) -> Result<Replay, StorageError> {
     .to_owned();
     index += length;
     let count = read_varint(data, &mut index)? as usize;
+    if count > data.len().saturating_mul(2) {
+        return Err(StorageError::CorruptReplay);
+    }
     let mut events = Vec::with_capacity(count);
     let mut milliseconds = 0_u64;
     for _ in 0..count {
@@ -121,7 +425,7 @@ pub fn decode_replay(data: &[u8]) -> Result<Replay, StorageError> {
             return Err(StorageError::CorruptReplay);
         }
         events.push(ReplayEvent {
-            offset: std::time::Duration::from_millis(milliseconds),
+            offset: Duration::from_millis(milliseconds),
             kind,
             character,
         });
@@ -193,42 +497,6 @@ fn read_varint(data: &[u8], index: &mut usize) -> Result<u64, StorageError> {
     Err(StorageError::CorruptReplay)
 }
 
-pub fn history_path(paths: &Paths) -> PathBuf {
-    paths.data.join("history.json")
-}
-
-pub fn load_history(paths: &Paths) -> Result<Vec<StoredResult>, StorageError> {
-    match fs::read(history_path(paths)) {
-        Ok(contents) => Ok(serde_json::from_slice(&contents)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(StorageError::Io(error)),
-    }
-}
-
-pub fn save_result(paths: &Paths, result: &RunResult) -> Result<String, StorageError> {
-    fs::create_dir_all(&paths.data)?;
-    let mut history = load_history(paths)?;
-    let id = format!(
-        "{:016x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos() as u64)
-    );
-    history.push(StoredResult {
-        id: id.clone(),
-        timestamp: format!("{:?}", std::time::SystemTime::now()),
-        mode: result.config.text_mode,
-        tag: result.config.tag.clone(),
-        result: RunResultWire::from(result),
-    });
-    if history.len() > HISTORY_LIMIT {
-        history.drain(..history.len() - HISTORY_LIMIT);
-    }
-    let body = serde_json::to_vec_pretty(&history)?;
-    atomic_write(&history_path(paths), &body)?;
-    Ok(id)
-}
-
 pub fn clear(paths: &Paths, target: crate::cli::ClearTarget) -> Result<(), StorageError> {
     match target {
         crate::cli::ClearTarget::History => remove_history(paths)?,
@@ -240,31 +508,28 @@ pub fn clear(paths: &Paths, target: crate::cli::ClearTarget) -> Result<(), Stora
     }
     Ok(())
 }
-
 fn remove_history(paths: &Paths) -> Result<(), StorageError> {
     for name in ["history.json", "bests.json", "replays"] {
-        let path = paths.data.join(name);
-        if path.is_dir() {
-            match fs::remove_dir_all(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(StorageError::Io(error)),
-            }
-        } else {
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(StorageError::Io(error)),
-            }
-        }
+        remove_optional(&paths.data.join(name))?;
     }
     Ok(())
 }
 fn remove_languages(paths: &Paths) -> Result<(), StorageError> {
-    let path = paths.data.join("languages");
-    match fs::remove_dir_all(path) {
+    remove_optional(&paths.data.join("languages"))
+}
+fn remove_optional(path: &std::path::Path) -> Result<(), StorageError> {
+    let result = if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    match result {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(StorageError::Io(error)),
     }
+}
+
+fn rfc3339_now() -> String {
+    crate::time::rfc3339_now()
 }

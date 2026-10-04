@@ -110,9 +110,10 @@ impl FromStr for TextMode {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TestConfig {
     pub kind: TestKind,
+    #[serde(with = "duration_seconds")]
     pub duration: Duration,
     pub word_count: usize,
     pub text_mode: TextMode,
@@ -168,17 +169,32 @@ pub struct GenerateOptions {
     pub seed: i64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WordResult {
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub line: usize,
     pub expected: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub typed: String,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub missed: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub corrected: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RunResult {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub timestamp: String,
     pub config: TestConfig,
     pub wpm: f64,
     pub raw_wpm: f64,
@@ -190,6 +206,7 @@ pub struct RunResult {
     pub keystrokes_incorrect: i32,
     pub skipped: i32,
     pub total_chars: i32,
+    #[serde(with = "duration_nanoseconds")]
     pub duration: Duration,
     pub seed: i64,
     pub wpm_history: Vec<f64>,
@@ -199,4 +216,32 @@ pub struct RunResult {
     pub failed: bool,
     pub failure_reason: String,
     pub words: Vec<WordResult>,
+    #[serde(skip)]
+    pub started_at: String,
+}
+
+mod duration_seconds {
+    use std::time::Duration;
+
+    use serde::Serializer;
+
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(duration.as_secs())
+    }
+}
+
+mod duration_nanoseconds {
+    use std::time::Duration;
+
+    use serde::Serializer;
+
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u128(duration.as_nanos())
+    }
 }

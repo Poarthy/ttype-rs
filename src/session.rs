@@ -59,7 +59,9 @@ pub struct Session {
     keystrokes_incorrect: i32,
     clock: Box<dyn Clock>,
     started_at: Option<Duration>,
+    started_wall: Option<SystemTime>,
     ended_at: Option<Duration>,
+    ended_wall: Option<SystemTime>,
     caps_inversions: i32,
     seed: i64,
     wpm_history: Vec<f64>,
@@ -111,7 +113,9 @@ impl Session {
             keystrokes_incorrect: 0,
             clock: Box::new(clock),
             started_at: None,
+            started_wall: None,
             ended_at: None,
+            ended_wall: None,
             caps_inversions: 0,
             seed,
             wpm_history: Vec::new(),
@@ -255,7 +259,9 @@ impl Session {
         self.keystrokes_incorrect = 0;
         self.state = SessionState::Ready;
         self.started_at = None;
+        self.started_wall = None;
         self.ended_at = None;
+        self.ended_wall = None;
         self.caps_inversions = 0;
         self.wpm_history.clear();
         self.seconds.clear();
@@ -317,6 +323,7 @@ impl Session {
         if matches!(self.state, SessionState::Ready) {
             self.state = SessionState::Active;
             self.started_at = Some(self.clock.now());
+            self.started_wall = Some(SystemTime::now());
         }
         self.record_event(ReplayEventKind::Rune, Some(character));
 
@@ -419,6 +426,7 @@ impl Session {
         if matches!(self.state, SessionState::Ready) {
             self.state = SessionState::Active;
             self.started_at = Some(self.clock.now());
+            self.started_wall = Some(SystemTime::now());
         }
         self.finish();
     }
@@ -430,6 +438,11 @@ impl Session {
         let rated_elapsed = self.elapsed().max(MIN_RATED_TIME);
         let (raw_wpm_history, error_history) = self.per_second_samples();
         Ok(RunResult {
+            id: result_id(),
+            timestamp: self
+                .ended_wall
+                .map(crate::time::rfc3339_from_system_time)
+                .unwrap_or_default(),
             config: self.config.clone(),
             wpm: stats::wpm(self.counts.correct, rated_elapsed),
             raw_wpm: stats::raw_wpm(self.counts, rated_elapsed),
@@ -450,6 +463,10 @@ impl Session {
             failed: self.failed,
             failure_reason: self.failure_reason.clone(),
             words: self.words(),
+            started_at: self
+                .started_wall
+                .map(crate::time::rfc3339_from_system_time)
+                .unwrap_or_default(),
         })
     }
 
@@ -732,7 +749,17 @@ impl Session {
         self.record_wpm_snapshot();
         self.state = SessionState::Finished;
         self.ended_at = Some(self.clock.now());
+        self.ended_wall = self
+            .started_wall
+            .and_then(|started| started.checked_add(self.elapsed()));
     }
+}
+
+fn result_id() -> String {
+    let entropy = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos() as u64);
+    format!("{entropy:016x}")
 }
 
 fn resolve_seed(configured: i64) -> i64 {

@@ -84,6 +84,8 @@ pub enum ConfigError {
     Serialize(#[from] toml::ser::Error),
     #[error("word count must be at least 1")]
     WordCount,
+    #[error("custom needs text each time, so it can't be the default mode")]
+    CustomMode,
 }
 
 pub fn load(paths: &Paths) -> Result<Settings, ConfigError> {
@@ -113,6 +115,9 @@ pub fn apply(settings: &mut Settings, args: &ConfigArgs) -> Result<(), ConfigErr
         settings.default_word_count = value;
     }
     if let Some(value) = args.default_mode {
+        if value == TextMode::Custom {
+            return Err(ConfigError::CustomMode);
+        }
         settings.default_mode = value;
     }
     if let Some(value) = &args.default_language {
