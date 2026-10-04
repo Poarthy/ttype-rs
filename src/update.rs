@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flate2::read::GzDecoder;
@@ -56,6 +57,83 @@ pub enum InstallKind {
     Source,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutomaticUpdateMode {
+    Auto,
+    Notify,
+    Off,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AutoUpdateNotice {
+    StartingInstall(String),
+    Available(String),
+    Installed(String),
+}
+
+/// `TTYPE_UPDATE` takes precedence over the saved setting. Unknown values use
+/// the next source, and an unknown or empty saved setting means auto.
+pub fn automatic_update_mode(setting: &str, environment: Option<&str>) -> AutomaticUpdateMode {
+    fn parse(value: &str) -> Option<AutomaticUpdateMode> {
+        match value {
+            "auto" => Some(AutomaticUpdateMode::Auto),
+            "notify" => Some(AutomaticUpdateMode::Notify),
+            "off" => Some(AutomaticUpdateMode::Off),
+            _ => None,
+        }
+    }
+    environment
+        .and_then(parse)
+        .or_else(|| parse(setting))
+        .unwrap_or(AutomaticUpdateMode::Auto)
+}
+
+/// Starts the same daily release check used by the Go TUI without adding an
+/// async runtime. The Ratatui loop remains single-threaded and polls the
+/// receiver for a completed status notice.
+pub fn spawn_auto_update(
+    state_path: PathBuf,
+    local: String,
+    mode: AutomaticUpdateMode,
+) -> Option<Receiver<AutoUpdateNotice>> {
+    if mode == AutomaticUpdateMode::Off {
+        return None;
+    }
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok(state) = check_daily(&state_path, &local, RELEASES_URL) else {
+            return;
+        };
+        if state.latest.is_empty() {
+            return;
+        }
+        let latest = state.latest;
+        let Ok(plan) = InstallPlan::current() else {
+            let _ = sender.send(AutoUpdateNotice::Available(latest));
+            return;
+        };
+        if mode == AutomaticUpdateMode::Auto && plan.require_owned(&latest, &local).is_ok() {
+            let _ = sender.send(AutoUpdateNotice::StartingInstall(latest.clone()));
+            if install(
+                &plan.executable,
+                &local,
+                &latest,
+                RELEASES_URL,
+                &plan,
+                false,
+                &state_path,
+            )
+            .is_ok()
+            {
+                let _ = sender.send(AutoUpdateNotice::Installed(latest));
+                return;
+            }
+        }
+        let _ = sender.send(AutoUpdateNotice::Available(latest));
+    });
+    Some(receiver)
+}
+
 #[derive(Clone, Debug)]
 pub struct InstallPlan {
     pub kind: InstallKind,
@@ -98,6 +176,14 @@ impl InstallPlan {
             InstallKind::ReleaseScript if !directory_writable(self.executable.parent()) => {
                 Err(UpdateError::ManualInstall("sudo ttype update".to_owned()))
             }
+            InstallKind::ReleaseScript => Ok(()),
+        }
+    }
+
+    pub fn require_owned_explicit(&self) -> Result<(), UpdateError> {
+        match self.kind {
+            InstallKind::PackageManager => Err(UpdateError::PackageManaged),
+            InstallKind::Source => Err(UpdateError::SourceBuild),
             InstallKind::ReleaseScript => Ok(()),
         }
     }
@@ -195,14 +281,14 @@ pub fn newer_version(latest: &str, local: &str) -> bool {
     let Some(local) = version_parts(local) else {
         return !latest.is_empty();
     };
-    for index in 0..latest.len().max(local.len()) {
+    for index in 0..latest.len().min(local.len()) {
         let remote = latest.get(index).copied().unwrap_or(0);
         let current = local.get(index).copied().unwrap_or(0);
         if remote != current {
             return remote > current;
         }
     }
-    false
+    latest.len() > local.len()
 }
 
 fn version_parts(version: &str) -> Option<Vec<u64>> {
@@ -280,7 +366,11 @@ pub fn install(
     if !newer_version(latest, local) {
         return Ok(());
     }
-    plan.require_owned(latest, local)?;
+    if asked {
+        plan.require_owned_explicit()?;
+    } else {
+        plan.require_owned(latest, local)?;
+    }
     let now = now_unix();
     let state = load_state(state_path);
     if state.installed == latest {

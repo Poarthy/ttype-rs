@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -18,7 +19,7 @@ use crate::domain::{RunResult, TestConfig, TestKind, TextMode};
 use crate::replay::{Replay, ReplayEvent};
 use crate::session::{KeystrokeStatus, Session, SessionState};
 use crate::stats;
-use crate::storage::{self, StoredResult};
+use crate::storage::{self, StatsSummary, StoredResult};
 use crate::text::TextProvider;
 
 const RESULTS_KEY_GRACE: Duration = Duration::from_millis(700);
@@ -167,6 +168,10 @@ pub enum TuiError {
     Io(#[from] io::Error),
     #[error("session: {0}")]
     Session(#[from] crate::session::SessionError),
+    #[error("cached language: {0}")]
+    Language(#[from] crate::langcache::LanguageError),
+    #[error("cached language data directory is unavailable")]
+    NoLanguageData,
 }
 
 struct ReplayPlayback {
@@ -241,6 +246,7 @@ pub struct TuiApp {
     session: Session,
     provider: TextProvider,
     custom_target: Option<String>,
+    custom_word_lines: Option<Vec<usize>>,
     paths: Option<Paths>,
     screen: Screen,
     show_live_stats: bool,
@@ -248,9 +254,16 @@ pub struct TuiApp {
     settings_index: usize,
     settings_draft: Option<TestConfig>,
     language_index: usize,
+    language_ids: Vec<String>,
+    language_return: Screen,
+    quit_on_finish: bool,
+    no_save: bool,
+    result_save_attempted: bool,
     finished_at: Option<Instant>,
     replay: Option<ReplayPlayback>,
     notice: String,
+    update_messages: Option<Receiver<crate::update::AutoUpdateNotice>>,
+    update_install_active: bool,
 }
 
 impl TuiApp {
@@ -259,6 +272,8 @@ impl TuiApp {
         Self {
             custom_target: (session.config().text_mode == TextMode::Custom)
                 .then(|| session.target().to_owned()),
+            custom_word_lines: (session.config().text_mode == TextMode::Custom)
+                .then(|| session.word_lines().to_vec()),
             session,
             provider: builtin_provider(),
             paths: None,
@@ -268,14 +283,42 @@ impl TuiApp {
             settings_index: 0,
             settings_draft: None,
             language_index: 0,
+            language_ids: vec![String::new()],
+            language_return: Screen::Settings,
+            quit_on_finish: false,
+            no_save: false,
+            result_save_attempted: false,
             finished_at: None,
             replay: None,
             notice: String::new(),
+            update_messages: None,
+            update_install_active: false,
         }
     }
 
     pub fn with_paths(mut self, paths: Paths) -> Self {
+        self.language_ids
+            .extend(crate::langcache::LanguageCache::new(&paths.data).installed());
         self.paths = Some(paths);
+        self
+    }
+    pub fn with_notice(mut self, notice: String) -> Self {
+        self.notice = notice;
+        self
+    }
+    pub fn with_quit_on_finish(mut self, enabled: bool) -> Self {
+        self.quit_on_finish = enabled;
+        self
+    }
+    pub fn with_no_save(mut self, enabled: bool) -> Self {
+        self.no_save = enabled;
+        self
+    }
+    pub fn with_update_messages(
+        mut self,
+        receiver: Receiver<crate::update::AutoUpdateNotice>,
+    ) -> Self {
+        self.update_messages = Some(receiver);
         self
     }
     pub fn session(&self) -> &Session {
@@ -295,6 +338,7 @@ impl TuiApp {
         let mut terminal = Terminal::new(CrosstermBackend::new(output))?;
         let run_result = self.run_loop(&mut terminal);
         let restore_result = restore_terminal(&mut terminal);
+        self.wait_for_update();
         match (run_result, restore_result) {
             (Err(error), _) => Err(error),
             (Ok(()), Err(error)) => Err(error),
@@ -315,16 +359,20 @@ impl TuiApp {
             {
                 return Ok(());
             }
-            self.tick();
+            if self.tick() {
+                return Ok(());
+            }
         }
     }
 
-    fn tick(&mut self) {
+    fn tick(&mut self) -> bool {
+        self.poll_update_messages();
         match self.screen {
             Screen::Test => {
                 self.session.tick();
                 if self.session.state() == SessionState::Finished {
                     self.show_results();
+                    return self.quit_on_finish;
                 }
             }
             Screen::Replay => {
@@ -333,6 +381,46 @@ impl TuiApp {
                 }
             }
             _ => {}
+        }
+        false
+    }
+
+    fn poll_update_messages(&mut self) {
+        let Some(receiver) = &self.update_messages else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(crate::update::AutoUpdateNotice::StartingInstall(_)) => {
+                self.update_install_active = true;
+            }
+            Ok(crate::update::AutoUpdateNotice::Available(version)) => {
+                self.notice = format!("ttype {version} is available; run ttype update");
+                self.update_install_active = false;
+                self.update_messages = None;
+            }
+            Ok(crate::update::AutoUpdateNotice::Installed(version)) => {
+                self.notice = format!("ttype {version} is installed and runs from the next launch");
+                self.update_install_active = false;
+                self.update_messages = None;
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.update_install_active = false;
+                self.update_messages = None;
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+    }
+
+    fn wait_for_update(&mut self) {
+        let Some(receiver) = self.update_messages.take() else {
+            return;
+        };
+        let mut install_active = self.update_install_active;
+        while let Ok(notice) = receiver.try_recv() {
+            install_active = matches!(notice, crate::update::AutoUpdateNotice::StartingInstall(_));
+        }
+        if install_active {
+            let _ = receiver.recv_timeout(Duration::from_secs(30));
         }
     }
 
@@ -390,6 +478,7 @@ impl TuiApp {
         }
         if self.session.state() == SessionState::Finished {
             self.show_results();
+            return Ok(self.quit_on_finish);
         }
         Ok(false)
     }
@@ -428,10 +517,7 @@ impl TuiApp {
                 self.open_settings()
             }
             KeyCode::Char('M') => self.open_mode_picker(),
-            KeyCode::Char('L') => {
-                self.language_index = 0;
-                self.screen = Screen::LanguagePicker;
-            }
+            KeyCode::Char('L') => self.open_language_picker(Screen::Result),
             _ => {}
         }
         Ok(false)
@@ -495,7 +581,7 @@ impl TuiApp {
             KeyCode::Right | KeyCode::Char('l') => self.adjust_setting(1),
             KeyCode::Enter => {
                 if self.settings_index == 3 {
-                    self.screen = Screen::LanguagePicker;
+                    self.open_language_picker(Screen::Settings);
                 } else if let Some(config) = self.settings_draft.take() {
                     self.restart_with_config(config)?;
                     self.persist_defaults();
@@ -507,18 +593,36 @@ impl TuiApp {
     }
 
     fn handle_language_key(&mut self, key: KeyEvent) -> Result<bool, TuiError> {
+        let count = self.language_ids.len();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                self.screen = Screen::Settings
+                self.screen = self.language_return
             }
             KeyCode::Enter => {
-                if let Some(draft) = &mut self.settings_draft {
-                    draft.language.clear();
+                let selected = self
+                    .language_ids
+                    .get(self.language_index)
+                    .cloned()
+                    .unwrap_or_default();
+                if self.language_return == Screen::Settings {
+                    if let Some(draft) = &mut self.settings_draft {
+                        draft.language = selected;
+                    }
+                    self.screen = Screen::Settings;
+                } else {
+                    let mut next = self.session.config().clone();
+                    next.language = selected;
+                    if let Err(error) = self.restart_with_config(next) {
+                        self.notice = format!("couldn't change language: {error}");
+                        self.screen = self.language_return;
+                    }
                 }
-                self.screen = Screen::Settings;
             }
-            KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k') => {
-                self.language_index = 0
+            KeyCode::Up | KeyCode::Char('k') if count > 0 => {
+                self.language_index = (self.language_index + count - 1) % count
+            }
+            KeyCode::Down | KeyCode::Char('j') if count > 0 => {
+                self.language_index = (self.language_index + 1) % count
             }
             _ => {}
         }
@@ -555,6 +659,20 @@ impl TuiApp {
         self.settings_draft = Some(self.session.config().clone());
         self.settings_index = 0;
         self.screen = Screen::Settings;
+    }
+
+    fn open_language_picker(&mut self, return_to: Screen) {
+        let current = self.settings_draft.as_ref().map_or_else(
+            || self.session.config().language.as_str(),
+            |config| config.language.as_str(),
+        );
+        self.language_index = self
+            .language_ids
+            .iter()
+            .position(|id| id == current)
+            .unwrap_or(0);
+        self.language_return = return_to;
+        self.screen = Screen::LanguagePicker;
     }
 
     fn adjust_setting(&mut self, delta: i32) {
@@ -613,23 +731,38 @@ impl TuiApp {
     fn restart_current(&mut self) -> Result<(), TuiError> {
         self.session.restart()?;
         self.screen = Screen::Test;
+        self.result_save_attempted = false;
         self.finished_at = None;
         Ok(())
     }
 
     fn restart_with_config(&mut self, config: TestConfig) -> Result<(), TuiError> {
         let source: Box<dyn crate::text::TextSource> = if config.text_mode == TextMode::Custom {
-            Box::new(crate::text::StaticText(
+            Box::new(crate::text::StaticText::with_word_lines(
                 self.custom_target.clone().unwrap_or_default(),
+                self.custom_word_lines.clone().unwrap_or_default(),
             ))
         } else {
-            Box::new(self.provider.clone())
+            Box::new(self.provider_for_config(&config)?)
         };
         self.session = Session::from_source(config, source, RealClock::new())?;
         self.screen = Screen::Test;
+        self.result_save_attempted = false;
         self.finished_at = None;
         self.notice.clear();
         Ok(())
+    }
+
+    fn provider_for_config(&self, config: &TestConfig) -> Result<TextProvider, TuiError> {
+        if config.text_mode != TextMode::Words || config.language.is_empty() {
+            return Ok(self.provider.clone());
+        }
+        let paths = self.paths.as_ref().ok_or(TuiError::NoLanguageData)?;
+        let words = crate::langcache::LanguageCache::new(&paths.data).words(&config.language)?;
+        Ok(self
+            .provider
+            .clone()
+            .with_mode_items(TextMode::Words, words))
     }
 
     fn persist_defaults(&mut self) {
@@ -663,8 +796,47 @@ impl TuiApp {
     }
 
     fn show_results(&mut self) {
+        self.persist_completed_result();
         self.screen = Screen::Result;
         self.finished_at = Some(Instant::now());
+    }
+
+    // Go writes history and the replay as soon as a session finishes, before
+    // the user dismisses the result view. A failed replay write does not undo
+    // a saved result because playback is optional there as well.
+    fn persist_completed_result(&mut self) {
+        if self.result_save_attempted {
+            return;
+        }
+        self.result_save_attempted = true;
+        if self.no_save {
+            self.notice = "not saved".to_owned();
+            return;
+        }
+        let Some(paths) = self.paths.clone() else {
+            return;
+        };
+        let result = match self.session.result() {
+            Ok(result) => result,
+            Err(error) => {
+                self.notice = format!("result not saved: {error}");
+                return;
+            }
+        };
+        let id = match storage::save_result(&paths, &result) {
+            Ok(id) => id,
+            Err(error) => {
+                self.notice = format!("result not saved: {error}");
+                return;
+            }
+        };
+        if !self.session.events().is_empty() {
+            let replay = Replay {
+                target: self.session.target().to_owned(),
+                events: self.session.events().to_vec(),
+            };
+            let _ = storage::save_replay(&paths, &id, &replay);
+        }
     }
 
     fn draw(&self, frame: &mut Frame) {
@@ -709,6 +881,7 @@ impl TuiApp {
             Screen::LanguagePicker => draw_language_picker(
                 frame,
                 area,
+                &self.language_ids,
                 self.language_index,
                 &Theme::from_name(&self.session.config().theme),
             ),
@@ -748,8 +921,8 @@ fn draw_test(
     notice: &str,
 ) {
     let mut lines = Vec::new();
-    if !session.config().zen && show_live {
-        lines.push(hud_line(session, theme));
+    if !session.config().zen {
+        lines.push(hud_line(session, theme, show_live));
         lines.push(Line::default());
     }
     lines.extend(render_target(session, theme));
@@ -778,25 +951,17 @@ fn draw_test(
     );
 }
 
-fn hud_line(session: &Session, theme: &Theme) -> Line<'static> {
+fn hud_line(session: &Session, theme: &Theme, show_live: bool) -> Line<'static> {
     let mut spans = Vec::new();
-    if session.config().blind {
+    let (wpm, raw_wpm) = hud_pace(session);
+    if show_live && session.config().blind {
         spans.push(Span::styled("raw ", theme.help));
-        spans.push(Span::styled(
-            format!("{:.0}", session.live_raw_wpm()),
-            theme.raw,
-        ));
-    } else {
+        spans.push(Span::styled(hud_number(raw_wpm), theme.raw));
+    } else if show_live {
         spans.push(Span::styled("wpm ", theme.help));
-        spans.push(Span::styled(
-            format!("{:.0}", session.live_wpm()),
-            theme.wpm,
-        ));
+        spans.push(Span::styled(hud_number(wpm), theme.wpm));
         spans.push(Span::styled("  raw ", theme.help));
-        spans.push(Span::styled(
-            format!("{:.0}", session.live_raw_wpm()),
-            theme.raw,
-        ));
+        spans.push(Span::styled(hud_number(raw_wpm), theme.raw));
         spans.push(Span::styled("  acc ", theme.help));
         spans.push(Span::styled(
             format!("{:.0}%", session.live_accuracy()),
@@ -811,12 +976,28 @@ fn hud_line(session: &Session, theme: &Theme) -> Line<'static> {
     spans.push(Span::styled("  ", theme.help));
     let timing = if session.config().is_words_mode() {
         let (done, total) = session.words_progress();
-        format!("{done}/{total} words")
+        format!("{done}/{total} · {}", format_clock(session.elapsed()))
     } else {
         format_clock(session.remaining())
     };
     spans.push(Span::styled(timing, theme.time));
     Line::from(spans)
+}
+
+/// The HUD does not extrapolate a just-started run. The Go reference rescales
+/// its live WPM values until one full second has elapsed before display.
+pub fn hud_pace(session: &Session) -> (f64, f64) {
+    let elapsed = session.elapsed();
+    if elapsed.is_zero() || elapsed >= Duration::from_secs(1) {
+        (session.live_wpm(), session.live_raw_wpm())
+    } else {
+        let scale = elapsed.as_secs_f64();
+        (session.live_wpm() * scale, session.live_raw_wpm() * scale)
+    }
+}
+
+fn hud_number(value: f64) -> String {
+    format!("{:.0}", value.clamp(0.0, 999.0))
 }
 
 fn render_target(session: &Session, theme: &Theme) -> Vec<Line<'static>> {
@@ -1040,46 +1221,261 @@ fn draw_result(
     );
 }
 
-pub fn render_chart(history: &[f64], raw_history: &[f64], errors: &[i32], width: usize) -> String {
-    if history.len() < 2 || width < 8 {
+const MIN_BRAILLE_CHART_WIDTH: usize = 40;
+const MIN_BRAILLE_CHART_HEIGHT: usize = 5;
+const MIN_CHART_HEIGHT: usize = 2;
+const BRAILLE_BITS: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum ChartSeries {
+    None,
+    Raw,
+    Net,
+    Error,
+}
+
+struct BraillePlot {
+    dots: Vec<Vec<u8>>,
+    series: Vec<Vec<ChartSeries>>,
+    cols: usize,
+    rows: usize,
+    scale: f64,
+}
+
+impl BraillePlot {
+    fn new(cols: usize, rows: usize, scale: f64) -> Self {
+        Self {
+            dots: vec![vec![0; cols]; rows],
+            series: vec![vec![ChartSeries::None; cols]; rows],
+            cols,
+            rows,
+            scale,
+        }
+    }
+
+    fn pixel_width(&self) -> usize {
+        self.cols * 2
+    }
+
+    fn pixel_height(&self) -> usize {
+        self.rows * 4
+    }
+
+    fn y(&self, value: f64) -> usize {
+        let value = value.max(0.0);
+        ((value / self.scale * (self.pixel_height() - 1) as f64).round() as usize)
+            .min(self.pixel_height() - 1)
+    }
+
+    fn set(&mut self, pixel_x: usize, pixel_y: usize, series: ChartSeries) {
+        let from_top = self.pixel_height() - 1 - pixel_y;
+        let row = from_top / 4;
+        let column = pixel_x / 2;
+        self.dots[row][column] |= BRAILLE_BITS[from_top % 4][pixel_x % 2];
+        if series > self.series[row][column] {
+            self.series[row][column] = series;
+        }
+    }
+
+    fn line(&mut self, values: &[f64], series: ChartSeries) {
+        let mut previous = None;
+        for pixel_x in 0..self.pixel_width() {
+            let current = self.y(sample_at(values, pixel_x, self.pixel_width()));
+            let (low, high) = previous.map_or((current, current), |last: usize| {
+                (last.min(current), last.max(current))
+            });
+            for pixel_y in low..=high {
+                self.set(pixel_x, pixel_y, series);
+            }
+            previous = Some(current);
+        }
+    }
+
+    fn band(&mut self, values: &[f64], series: ChartSeries) {
+        for pixel_x in 0..self.pixel_width() {
+            let top = self.y(sample_at(values, pixel_x, self.pixel_width()));
+            for pixel_y in 0..=top {
+                self.set(pixel_x, pixel_y, series);
+            }
+        }
+    }
+
+    fn mark_errors(&mut self, history: &[f64], raw_history: &[f64], error_history: &[i32]) {
+        if error_history.len() < 2 {
+            return;
+        }
+        for (index, count) in error_history.iter().enumerate() {
+            if *count <= 0 {
+                continue;
+            }
+            let Some(value) = raw_history
+                .get(index)
+                .or_else(|| history.get(index))
+                .copied()
+            else {
+                continue;
+            };
+            let pixel_x = index * (self.pixel_width() - 1) / (error_history.len() - 1);
+            let row = (self.pixel_height() - 1 - self.y(value)) / 4;
+            self.series[row][pixel_x / 2] = ChartSeries::Error;
+        }
+    }
+
+    fn render_row(&self, row: usize) -> String {
+        self.dots[row]
+            .iter()
+            .enumerate()
+            .map(|(column, dots)| match self.series[row][column] {
+                ChartSeries::Error => '×',
+                _ if *dots == 0 => ' ',
+                _ => char::from_u32(0x2800 + u32::from(*dots)).unwrap_or(' '),
+            })
+            .collect()
+    }
+}
+
+/// Render the reference result chart shape without terminal styling. The
+/// thresholds, interpolation, and braille-dot mapping match Go's chart.go.
+pub fn render_result_chart(
+    history: &[f64],
+    raw_history: &[f64],
+    error_history: &[i32],
+    width: usize,
+    height: usize,
+    unicode_capable: bool,
+) -> String {
+    if history.len() < 2 || height < MIN_CHART_HEIGHT || width < 8 {
         return String::new();
     }
     let peak = history.iter().copied().fold(0.0, f64::max);
-    let width = width.clamp(2, 64);
-    let bar = |values: &[f64]| -> String {
-        let glyphs: Vec<char> = "▁▂▃▄▅▆▇█".chars().collect();
-        (0..width)
-            .map(|column| {
-                let index = column * (values.len() - 1) / (width - 1);
-                let maximum = values.iter().copied().fold(0.0, f64::max).max(1.0);
-                let glyph = ((values[index] / maximum * (glyphs.len() - 1) as f64).round()
-                    as usize)
-                    .min(glyphs.len() - 1);
-                glyphs[glyph]
-            })
-            .collect()
-    };
-    let mut rows = vec![
-        format!("wpm over time · peak {:.0}", peak),
-        format!("net {}", bar(history)),
-    ];
+    let header = format!("wpm over time · peak {:.0}", peak);
+    if width < MIN_BRAILLE_CHART_WIDTH || height < MIN_BRAILLE_CHART_HEIGHT || !unicode_capable {
+        return format!(
+            "{header}\n{}",
+            render_sparkline(&downsample_series(history, width))
+        );
+    }
+    format!(
+        "{header}\n{}",
+        render_braille_chart(history, raw_history, error_history, width, height - 1)
+    )
+}
+
+pub fn render_chart(history: &[f64], raw_history: &[f64], errors: &[i32], width: usize) -> String {
+    render_result_chart(history, raw_history, errors, width, 6, unicode_capable())
+}
+
+fn render_braille_chart(
+    history: &[f64],
+    raw_history: &[f64],
+    error_history: &[i32],
+    width: usize,
+    height: usize,
+) -> String {
+    let maximum = history
+        .iter()
+        .chain(raw_history)
+        .copied()
+        .fold(0.0, f64::max);
+    let scale = (maximum / 10.0).ceil().mul_add(10.0, 0.0).max(10.0);
+    let top_label = format!("{scale:.0}");
+    let gutter = top_label.len();
+    let mut plot = BraillePlot::new(width - gutter - 1, height - 1, scale);
     if raw_history.len() > 1 {
-        rows.push(format!("raw {}", bar(raw_history)));
+        plot.band(raw_history, ChartSeries::Raw);
     }
-    if errors.iter().any(|error| *error > 0) {
-        let marks: String = (0..width)
-            .map(|column| {
-                let index = column * (errors.len().saturating_sub(1)) / (width - 1);
-                if errors.get(index).copied().unwrap_or(0) > 0 {
-                    '×'
-                } else {
-                    ' '
-                }
-            })
-            .collect();
-        rows.push(format!("err {marks}"));
+    plot.line(history, ChartSeries::Net);
+    plot.mark_errors(history, raw_history, error_history);
+
+    let mut output = String::new();
+    for row in 0..plot.rows {
+        let label = if row == 0 {
+            top_label.as_str()
+        } else if row == plot.rows - 1 {
+            "0"
+        } else if row == plot.rows / 2 {
+            &format!("{:.0}", scale / 2.0)
+        } else {
+            ""
+        };
+        if label.is_empty() {
+            output.push_str(&" ".repeat(gutter));
+            output.push('│');
+        } else {
+            output.push_str(&format!("{label:>gutter$}┤"));
+        }
+        output.push_str(&plot.render_row(row));
+        if row + 1 < plot.rows {
+            output.push('\n');
+        }
     }
-    rows.join("\n")
+    output.push('\n');
+    output.push_str(&chart_x_axis(history.len() - 1, gutter, plot.cols));
+    output
+}
+
+fn sample_at(values: &[f64], pixel_x: usize, pixel_width: usize) -> f64 {
+    let position = pixel_x as f64 * (values.len() - 1) as f64 / (pixel_width - 1) as f64;
+    let index = position as usize;
+    if index >= values.len() - 1 {
+        return values[values.len() - 1];
+    }
+    let fraction = position - index as f64;
+    values[index] * (1.0 - fraction) + values[index + 1] * fraction
+}
+
+fn chart_x_axis(seconds: usize, gutter: usize, columns: usize) -> String {
+    let left = "0s";
+    let right = format!("{seconds}s");
+    let dashes = columns.saturating_sub(left.len() + right.len());
+    format!(
+        "{}└{left}{}{}",
+        " ".repeat(gutter),
+        "─".repeat(dashes),
+        right
+    )
+}
+
+fn render_sparkline(values: &[f64]) -> String {
+    const CHARS: &[u8] = b" .:-=+#";
+    let maximum = values.iter().copied().fold(1.0, f64::max);
+    values
+        .iter()
+        .map(|value| {
+            let index =
+                ((*value / maximum * (CHARS.len() - 1) as f64) as usize).min(CHARS.len() - 1);
+            CHARS[index] as char
+        })
+        .collect()
+}
+
+fn downsample_series(values: &[f64], maximum: usize) -> Vec<f64> {
+    if maximum < 1 || values.len() <= maximum {
+        return values.to_vec();
+    }
+    if maximum == 1 {
+        return values[..1].to_vec();
+    }
+    (0..maximum)
+        .map(|index| {
+            let point = index as f64 * (values.len() - 1) as f64 / (maximum - 1) as f64;
+            values[point.round() as usize]
+        })
+        .collect()
+}
+
+fn unicode_capable() -> bool {
+    for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
+        let Ok(value) = std::env::var(key) else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        let value = value.to_ascii_uppercase();
+        return value.contains("UTF-8") || value.contains("UTF8");
+    }
+    true
 }
 
 pub fn render_heatmap(errors: &std::collections::BTreeMap<String, i32>, limit: usize) -> String {
@@ -1095,6 +1491,68 @@ pub fn render_heatmap(errors: &std::collections::BTreeMap<String, i32>, limit: u
         })
         .collect::<Vec<_>>()
         .join("  ")
+}
+
+pub fn render_stats_text(summary: &StatsSummary, trend: &[f64], width: usize) -> String {
+    let mut filters = Vec::new();
+    let mut titles = Vec::new();
+    if !summary.filter_mode.is_empty() {
+        filters.push(format!("mode \"{}\"", summary.filter_mode));
+        titles.push(format!("Mode: {}", summary.filter_mode));
+    }
+    if !summary.filter_tag.is_empty() {
+        filters.push(format!("tag \"{}\"", summary.filter_tag));
+        titles.push(format!("Tag: {}", summary.filter_tag));
+    }
+    if summary.total_tests == 0 {
+        return if filters.is_empty() {
+            "No test history yet.\n".to_owned()
+        } else {
+            format!("No tests recorded for {}.\n", filters.join(" and "))
+        };
+    }
+
+    let title = if titles.is_empty() {
+        "All tests".to_owned()
+    } else {
+        titles.join(" · ")
+    };
+    let mut lines = vec![title, String::new()];
+    for (label, value) in [
+        ("tests", summary.total_tests.to_string()),
+        ("avg wpm", format!("{:.2}", summary.average_wpm)),
+        ("avg acc", format!("{:.2}%", summary.average_accuracy)),
+        ("best wpm", format!("{:.2}", summary.best_wpm)),
+        ("last 10", format!("{:.2}", summary.recent_average_wpm)),
+    ] {
+        lines.push(format!("  {label:<9}{value}"));
+    }
+    if filters.is_empty() && summary.personal_best.best_wpm > 0.0 {
+        lines.push(String::new());
+        lines.push(format!(
+            "  all-time  {:.2} wpm · {:.2}% accuracy",
+            summary.personal_best.best_wpm, summary.personal_best.best_accuracy
+        ));
+    }
+    if trend.len() > 1 {
+        let sample = downsample_series(trend, width.min(72).saturating_sub(4).max(8));
+        lines.push(String::new());
+        lines.push("  trend".to_owned());
+        lines.push(format!("  {}", render_sparkline_ascii(&sample)));
+    }
+    lines.join("\n") + "\n"
+}
+
+fn render_sparkline_ascii(values: &[f64]) -> String {
+    const CHARS: &[u8] = b" .:-=+#";
+    let maximum = values.iter().copied().fold(1.0, f64::max);
+    values
+        .iter()
+        .map(|value| {
+            CHARS[((value / maximum * (CHARS.len() - 1) as f64) as usize).min(CHARS.len() - 1)]
+                as char
+        })
+        .collect()
 }
 
 fn draw_overlay(frame: &mut Frame, area: Rect, title: &str, body: String, theme: &Theme) {
@@ -1223,8 +1681,28 @@ fn draw_settings(
     );
 }
 
-fn draw_language_picker(frame: &mut Frame, area: Rect, _selected: usize, theme: &Theme) {
-    draw_overlay(frame, area, "Language", "Built-in and cached languages\n\n> english (built-in)\n\nThis offline build uses embedded English practice lists.\nDownloadable language lists belong in $XDG_DATA_HOME/ttype/languages.\n\nenter select  esc/q back".to_owned(), theme);
+fn draw_language_picker(
+    frame: &mut Frame,
+    area: Rect,
+    ids: &[String],
+    selected: usize,
+    theme: &Theme,
+) {
+    let mut lines = vec!["Built-in and cached languages".to_owned(), String::new()];
+    for (index, id) in ids.iter().enumerate() {
+        let marker = if id.is_empty() { "" } else { "  cached" };
+        lines.push(format!(
+            "{} {}{marker}",
+            if index == selected { ">" } else { " " },
+            crate::langcache::display_name(id),
+        ));
+    }
+    lines.push(String::new());
+    lines.push("This offline build reads lists already stored in".to_owned());
+    lines.push("$XDG_DATA_HOME/ttype/languages.".to_owned());
+    lines.push(String::new());
+    lines.push("up/down select  enter apply  esc/q back".to_owned());
+    draw_overlay(frame, area, "Language", lines.join("\n"), theme);
 }
 
 fn draw_replay(frame: &mut Frame, area: Rect, replay: &ReplayPlayback, theme: &Theme) {
@@ -1282,11 +1760,8 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     )
 }
 fn format_clock(duration: Duration) -> String {
-    format!(
-        "{:02}:{:02}",
-        duration.as_secs() / 60,
-        duration.as_secs() % 60
-    )
+    let rounded_seconds = (duration.as_millis().saturating_add(500) / 1_000) as u64;
+    format!("{}:{:02}", rounded_seconds / 60, rounded_seconds % 60)
 }
 fn on_off(value: bool) -> &'static str {
     if value { "on" } else { "off" }
@@ -1489,4 +1964,77 @@ fn restore_terminal<W: Write>(
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    use crate::clock::FakeClock;
+    use crate::config::Paths;
+    use crate::domain::{TestConfig, TestKind};
+    use crate::session::Session;
+    use crate::storage;
+
+    use super::TuiApp;
+
+    #[test]
+    fn completed_run_is_persisted_before_the_result_screen_is_dismissed() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root =
+            std::env::temp_dir().join(format!("ttype-tui-finish-{}-{suffix}", std::process::id()));
+        let paths = Paths {
+            config: root.join("config"),
+            data: root.join("data"),
+        };
+        let clock = FakeClock::new();
+        let mut session = match Session::new(
+            TestConfig {
+                kind: TestKind::Words,
+                word_count: 1,
+                ..TestConfig::default()
+            },
+            "x",
+            clock,
+        ) {
+            Ok(session) => session,
+            Err(error) => panic!("create session: {error}"),
+        };
+        session.input_char('x');
+
+        let mut app = TuiApp::new(session).with_paths(paths.clone());
+        app.show_results();
+        let rows = match storage::list_results(&paths, 0) {
+            Ok(rows) => rows,
+            Err(error) => panic!("list results: {error}"),
+        };
+        assert_eq!(rows.len(), 1);
+        assert!(storage::load_replay(&paths, &rows[0].id).is_ok());
+
+        app.show_results();
+        let rows = match storage::list_results(&paths, 0) {
+            Ok(rows) => rows,
+            Err(error) => panic!("list results after duplicate finish: {error}"),
+        };
+        assert_eq!(rows.len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ordinary_background_check_never_delays_tui_exit() {
+        let clock = FakeClock::new();
+        let session = match Session::new(TestConfig::default(), "x", clock) {
+            Ok(session) => session,
+            Err(error) => panic!("create session: {error}"),
+        };
+        let (sender, receiver) = mpsc::channel();
+        let mut app = TuiApp::new(session).with_update_messages(receiver);
+        let started = Instant::now();
+        app.wait_for_update();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(sender);
+    }
 }

@@ -31,8 +31,8 @@ man-install:
 	install -Dm644 man/$(BINARY).1 $(DESTDIR)$(PREFIX)/share/man/man1/$(BINARY).1
 
 release-snapshot:
-	cargo build --release --target x86_64-unknown-linux-musl
-	cargo build --release --target aarch64-unknown-linux-musl
+	TTYPE_RELEASE=1 cargo build --release --target x86_64-unknown-linux-musl
+	TTYPE_RELEASE=1 cargo build --release --target aarch64-unknown-linux-musl
 
 clean:
 	cargo clean

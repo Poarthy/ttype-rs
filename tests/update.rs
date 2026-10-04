@@ -3,7 +3,8 @@ use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use tar::Builder;
 use ttype_core::update::{
-    UpdateState, atomic_replace, extract_binary, newer_version, should_check, verify_checksum,
+    AutomaticUpdateMode, InstallKind, InstallPlan, UpdateState, atomic_replace,
+    automatic_update_mode, extract_binary, newer_version, should_check, verify_checksum,
 };
 
 #[test]
@@ -12,6 +13,8 @@ fn version_comparison_matches_go_vectors() {
     assert!(newer_version("1.2.1", "1.2"));
     assert!(newer_version("1.0.0", "dev"));
     assert!(!newer_version("1.2.0", "1.3.0"));
+    assert!(!newer_version("1.2", "1.2.0"));
+    assert!(!newer_version("", "1.0.0"));
 }
 #[test]
 fn checksum_and_atomic_swap_preserve_expected_content() {
@@ -41,6 +44,41 @@ fn update_checks_are_limited_to_once_daily_even_after_failures() {
     };
     assert!(!should_check(&state, 1_000 + 86_399));
     assert!(should_check(&state, 1_000 + 86_400));
+    assert!(should_check(&state, 999));
+}
+
+#[test]
+fn update_plan_refuses_unowned_and_major_version_changes_before_download() {
+    let source = InstallPlan {
+        kind: InstallKind::Source,
+        executable: std::env::temp_dir().join("ttype-source"),
+        platform: "linux_amd64".to_owned(),
+    };
+    assert!(source.require_owned("1.2.0", "1.1.0").is_err());
+
+    let release = InstallPlan {
+        kind: InstallKind::ReleaseScript,
+        executable: std::env::temp_dir().join("ttype-release"),
+        platform: "linux_amd64".to_owned(),
+    };
+    assert!(release.require_owned("2.0.0", "1.1.0").is_err());
+    assert!(release.require_owned_explicit().is_ok());
+}
+
+#[test]
+fn automatic_update_mode_uses_environment_then_setting_then_auto() {
+    assert_eq!(
+        automatic_update_mode("notify", Some("off")),
+        AutomaticUpdateMode::Off
+    );
+    assert_eq!(
+        automatic_update_mode("notify", Some("not-a-mode")),
+        AutomaticUpdateMode::Notify
+    );
+    assert_eq!(
+        automatic_update_mode("not-a-mode", None),
+        AutomaticUpdateMode::Auto
+    );
 }
 
 #[test]

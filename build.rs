@@ -6,4 +6,9 @@ fn main() {
         std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "dev".to_owned())
     });
     println!("cargo:rustc-env=TTYPE_VERSION={version}");
+    if std::env::var("TTYPE_RELEASE").as_deref() == Ok("1") {
+        // `option_env!` in the updater distinguishes signed release archives
+        // from local/source builds, so carry this build-only marker to rustc.
+        println!("cargo:rustc-env=TTYPE_RELEASE=1");
+    }
 }
