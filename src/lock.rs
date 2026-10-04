@@ -11,6 +11,8 @@ pub fn lock_directory(directory: &Path) -> io::Result<File> {
         .create(true)
         .read(true)
         .write(true)
+        // This is an advisory semaphore, not a payload file.
+        .truncate(false)
         .open(directory.join(".lock"))?;
     file.lock()?;
     Ok(file)
