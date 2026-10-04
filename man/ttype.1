@@ -1,53 +1,112 @@
-.TH TTYPE 1
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ttype 1  "ttype 0.1.0"
 .SH NAME
-ttype \- terminal typing practice
+ttype \- Terminal typing practice
 .SH SYNOPSIS
-.B ttype
-[OPTIONS] [COMMAND]
+\fBttype\fR [\fB\-\-time\fR] [\fB\-\-words\fR] [\fB\-\-language\fR] [\fB\-\-mode\fR] [\fB\-\-theme\fR] [\fB\-\-width\fR] [\fB\-\-punctuation\fR] [\fB\-\-numbers\fR] [\fB\-\-blind\fR] [\fB\-\-zen\fR] [\fB\-\-min\-wpm\fR] [\fB\-\-seed\fR] [\fB\-\-output\fR] [\fB\-\-file\fR] [\fB\-\-text\fR] [\fB\-\-no\-save\fR] [\fB\-\-result\-file\fR] [\fB\-\-tag\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
-Practice prose and code typing in a terminal. Built-in modes include words,
-sentences, go, python, sql, shell, regex, backend, and rust.
-.SH COMMANDS
-.TP
-.B run
-Start a typing test.
-.TP
-.B config
-Show or change saved defaults.
-.TP
-.B history
-Show recorded test results.
-.TP
-.B stats
-Show aggregate scores.
-.TP
-.B clear
-Delete history, languages, or all saved data.
-.TP
-.B doctor
-Check terminal and data directory support.
-.TP
-.B update
-Check for and install a verified release.
-.TP
-.B completion
-Generate bash, zsh, fish, or PowerShell completion.
+Terminal typing practice
 .SH OPTIONS
 .TP
-.B --mode MODE
-Select words, sentences, sql, go, backend, python, shell, regex, or rust.
+\fB\-\-time\fR \fI<TIME>\fR
+
 .TP
-.B --time SECONDS
-Run a timed test.
+\fB\-\-words\fR \fI<WORDS>\fR
+
 .TP
-.B --words COUNT
-Run a word-count test.
+\fB\-\-language\fR \fI<LANGUAGE>\fR
+
 .TP
-.B --blind
-Hide typed correctness until word completion.
+\fB\-\-mode\fR \fI<MODE>\fR
+
+.br
+[\fIpossible values: \fRwords, sentences, sql, go, backend, python, shell, regex, rust, custom]
 .TP
-.B --zen
-Hide the test HUD.
+\fB\-\-theme\fR \fI<THEME>\fR
+
+.br
+[\fIpossible values: \fRdefault, monokai, dracula]
 .TP
-.B --min-wpm WPM
-Fail once a run falls below WPM after the initial grace period.
+\fB\-\-width\fR \fI<WIDTH>\fR
+
+.TP
+\fB\-\-punctuation\fR \fI<PUNCTUATION>\fR
+
+.br
+[\fIpossible values: \fRtrue, false]
+.TP
+\fB\-\-numbers\fR \fI<NUMBERS>\fR
+
+.br
+[\fIpossible values: \fRtrue, false]
+.TP
+\fB\-\-blind\fR \fI<BLIND>\fR
+
+.br
+[\fIpossible values: \fRtrue, false]
+.TP
+\fB\-\-zen\fR \fI<ZEN>\fR
+
+.br
+[\fIpossible values: \fRtrue, false]
+.TP
+\fB\-\-min\-wpm\fR \fI<MIN_WPM>\fR
+
+.TP
+\fB\-\-seed\fR \fI<SEED>\fR
+
+.TP
+\fB\-\-output\fR \fI<OUTPUT>\fR
+
+.br
+[\fIpossible values: \fRjson]
+.TP
+\fB\-\-file\fR \fI<FILE>\fR
+
+.TP
+\fB\-\-text\fR \fI<TEXT>\fR
+
+.TP
+\fB\-\-no\-save\fR
+
+.TP
+\fB\-\-result\-file\fR \fI<RESULT_FILE>\fR
+
+.TP
+\fB\-\-tag\fR \fI<TAG>\fR
+
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+ttype\-run(1)
+.TP
+ttype\-config(1)
+.TP
+ttype\-history(1)
+.TP
+ttype\-stats(1)
+.TP
+ttype\-languages(1)
+.TP
+ttype\-clear(1)
+.TP
+ttype\-doctor(1)
+.TP
+ttype\-update(1)
+.TP
+ttype\-completion(1)
+.TP
+ttype\-version(1)
+.TP
+ttype\-uninstall(1)
+.TP
+ttype\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH VERSION
+v0.1.0

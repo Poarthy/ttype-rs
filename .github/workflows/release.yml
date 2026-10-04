@@ -1,24 +1,92 @@
 name: Release
+
 on:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
-    runs-on: ubuntu-latest
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            os: linux
+            arch: amd64
+            linux: true
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            os: linux
+            arch: arm64
+            linux: true
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            os: darwin
+            arch: amd64
+            linux: false
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            os: darwin
+            arch: arm64
+            linux: false
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            os: windows
+            arch: amd64
+            linux: false
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4.2.2
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: ${{ matrix.target }}
-      - run: cargo build --release --target ${{ matrix.target }}
-      - run: sha256sum target/${{ matrix.target }}/release/ttype > checksums-${{ matrix.target }}.txt
+      - name: Install native musl linker
+        if: matrix.linux
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Check the host command surface
+        run: cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test --all-targets
+      - name: Build stamped release binary
+        shell: bash
+        run: TTYPE_RELEASE=1 TTYPE_VERSION="${GITHUB_REF_NAME#v}" cargo build --release --target ${{ matrix.target }}
+      - name: Generate command artifacts
+        shell: bash
+        run: cargo run --bin generate_artifacts -- dist/generated
+      - name: Package GoReleaser-compatible archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          archive="ttype_${version}_${{ matrix.os }}_${{ matrix.arch }}"
+          stage="dist/${archive}"
+          mkdir -p "$stage/completions"
+          if [[ "${{ matrix.os }}" == "windows" ]]; then
+            cp "target/${{ matrix.target }}/release/ttype.exe" "$stage/ttype.exe"
+          else
+            cp "target/${{ matrix.target }}/release/ttype" "$stage/ttype"
+          fi
+          cp README.md LICENSE "$stage/"
+          cp dist/generated/ttype.1 "$stage/ttype.1"
+          cp dist/generated/ttype.bash dist/generated/_ttype dist/generated/ttype.fish dist/generated/_ttype.ps1 "$stage/completions/"
+          tar -C "$stage" -czf "dist/${archive}.tar.gz" .
       - uses: actions/upload-artifact@v4.6.2
         with:
-          name: ttype-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/ttype
-            checksums-${{ matrix.target }}.txt
-            man/ttype.1
+          name: ttype_${{ matrix.os }}_${{ matrix.arch }}
+          path: dist/*.tar.gz
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4.2.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: (cd dist && sha256sum ttype_*.tar.gz > checksums.txt)
+      - uses: softprops/action-gh-release@v2.2.2
+        with:
+          files: dist/*

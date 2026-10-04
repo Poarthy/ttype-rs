@@ -35,3 +35,14 @@ cargo test --all-targets
 
 The release workflow produces static musl artifacts, checksums, and includes
 the generated command surface and `man/ttype.1`.
+
+## Commands
+
+`ttype run`, `config`, `history`, `stats`, `languages`, `clear`, `doctor`,
+`update`, `completion`, `version`, and `uninstall` are available. `history`
+opens an interactive selector on a terminal; press Enter to replay a retained
+run. Replay sidecars use the Go-compatible `TTRP` v1 format and retain the
+newest 50 files. `ttype update` is the only network-enabled operation: it
+checks the GitHub release redirect daily, verifies SHA-256 checksums, runs the
+downloaded binary with `--version`, and atomically swaps it only when the
+installed copy is an owned release build.
