@@ -16,7 +16,7 @@ specific implementation and test that protects each compatible behavior.
 | Built-in assets and new safe Rust corpus | `assets/embed.go:12-52` | `src/assets.rs`, `assets/rust/snippets.txt` | `tests/rust_mode.rs` |
 | Custom pipe/file/text selection, 1 MiB cap and normalization | `internal/app/custom_text.go:16-116` | `src/custom_text.rs`, `src/app.rs` | `tests/custom_text_golden.rs` |
 | Custom-text config precedence and whole-text clamp | `internal/app/custom_text.go:157-178` | `src/custom_text.rs` | `tests/custom_text_golden.rs` |
-| Flat history JSON, newest-first list, 1,000-result retention, missed words and concurrent-save lock | `internal/storage/{history,lock}.go:16-105,157-204` | `src/storage.rs`, `src/lock.rs` | `tests/history_golden.rs` |
+| Flat history JSON, newest-first list, 1,000-result retention, missed words and concurrent-save lock | `internal/storage/history.go:16-105,157-204`; `internal/storage/lock.go:1-29` | `src/storage.rs`, `src/lock.rs` | `tests/history_golden.rs` |
 | Result JSON status, source hash, duration and timestamps | `internal/app/result_file.go:16-99` | `src/result_file.rs`, `src/session.rs` | `tests/result_file_golden.rs`, `tests/result_json_golden.rs` |
 | Replay v1 binary sidecars and 50-file retention | `internal/storage/replay.go:17-198` | `src/storage.rs`, `src/replay.rs` | `tests/replay_storage.rs` |
 | Replay fake clock, 50 ms tick, exact event offsets, pause/speed/restart | `internal/tui/replay_model.go:24-146` | `src/tui.rs` | `tests/tui_render.rs`, `tests/replay_storage.rs` |
