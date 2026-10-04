@@ -90,7 +90,8 @@ fn release_archive_extracts_only_the_root_binary_with_a_bounded_reader()
         let mut builder = Builder::new(encoder);
         let payload = b"release-binary";
         let mut header = tar::Header::new_gnu();
-        header.set_path("ttype")?;
+        // extract_binary only matches the platform's own binary name.
+        header.set_path(if cfg!(windows) { "ttype.exe" } else { "ttype" })?;
         header.set_size(payload.len() as u64);
         header.set_mode(0o755);
         header.set_cksum();
